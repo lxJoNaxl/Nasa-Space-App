@@ -8,7 +8,12 @@ class Sprite:
         if image in loaded:
             self.image = loaded[image]
         else:
-            self.image = pygame.image.load(image)
+            try:
+                self.image = pygame.image.load(image).convert_alpha()
+            except (pygame.error, FileNotFoundError):
+                # Si no existe la imagen, usamos un cuadrado de color
+                self.image = pygame.Surface((32, 32))
+                self.image.fill((0, 220, 255))
             loaded[image] = self.image
         self.x = x
         self.y = y
@@ -17,7 +22,5 @@ class Sprite:
     def delete(self):
         sprites.remove(self)
 
-    def draw(self, screen):
-        screen.blit(self.image, (self.x, self.y))
-
-# Load things uniquely.
+    def draw(self, screen, camera=(0, 0)):
+        screen.blit(self.image, (self.x - camera[0], self.y - camera[1]))

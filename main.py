@@ -1,7 +1,8 @@
 import json
 import os
+import random
 import pygame
-from Fondo.FondoMenu import FondoMenu 
+from Fondo.FondoMenu import FondoMenu
 import player as player_mod
 from sprite import sprites
 from player import Player
@@ -33,9 +34,54 @@ SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partida.js
 menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
-MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO, DESPEGUE = range(9)
+(MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME,
+ PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA) = range(11)
 anim = None  # animación de despegue activa
 estado = MENU
+
+# ----------------------------------------------------------------------
+#  VIAJE Y ESCENA LUNAR
+# ----------------------------------------------------------------------
+DESTINO_FONDO = {3: "FondoEspacio.png"}  # índice de ORBITAS -> imagen del mapa (en /images)
+T_TEXTO = 3.5  # segundos mostrando "VIAJE EN PROGRESO"
+T_FADE = 0.8  # segundos que tarda en ponerse negra la pantalla
+T_NEGRO = 0.8  # segundos que se queda en negro
+LUNA_DEMORA = 0.5  # segundos antes de que entre el cohete
+LUNA_LLEGADA = 3.5  # segundos que tarda en llegar volando
+
+# Zona marcada en rojo (centro y tamaño máximo), como fracción del mapa (0 a 1)
+LUNA_CX = 0.092  # centro horizontal del cohete
+LUNA_CY = 0.575  # centro vertical del cohete
+LUNA_LARGO = 0.165  # largo del cohete más grande (fracción del ancho del mapa)
+LUNA_GROSOR = 0.15  # grosor máximo (fracción del alto del mapa)
+
+# Robot al fondo derecho del mapa (imágenes dentro de /images)
+ROBOT_ROTO = "ROBOT(ROTO).png"
+ROBOT_REPARADO = "ROBOT(REPARADO).png"
+ROBOT_X = 0.93  # posición horizontal (fracción del ancho del mapa)
+ROBOT_BASE_Y = 0.75  # donde apoya los pies (fracción del alto del mapa)
+ROBOT_ALTO = 0.17  # alto del robot (fracción del alto del mapa)
+T_REPARAR = 5.0  # segundos que hay que mantener presionada la E
+
+viaje_t0 = 0
+luna_t0 = 0
+luna_map = None
+luna_view = None
+luna_cohete = None
+luna_cohete_pos = (0, 0)
+luna_fase = "bajando"
+COHETES_HORIZ = None  # cohetes sin llama y acostados (se calculan una vez)
+robot_roto = robot_ok = None
+robot_rect = pygame.Rect(0, 0, 1, 1)
+robot_zona = pygame.Rect(0, 0, 1, 1)
+robot_reparado = False
+reparar_t0 = None
+reparado_t = 0
+negro = pygame.Surface((SCREEN_W, SCREEN_H))
+negro.fill((0, 0, 0))
+ESTRELLAS = [(random.random(), random.random(), random.uniform(0.03, 0.12), random.choice([1, 2, 2, 3]))
+             for _ in range(140)]
+
 
 # ======================================================================
 #  DATOS DEL JUEGO (Lenguaje Simple)
@@ -43,31 +89,40 @@ estado = MENU
 def P(nombre, info, simple, **kw):
     return {"nombre": nombre, "info": info, "simple": simple, **kw}
 
+
 BASE_POT = 1.5
 
 FORMATOS_CUBESAT = [
-    P("Cohete Pequeño", "Caja pequeña. Límite: 1.33 kg.", "Para misiones cortas.", vol=1.0, masa_chasis=0.35, cap_max=1.33, costo=15),
-    P("Cohete Mediano", "Caja mediana. Límite: 4 kg.", "Equilibrado para la Luna.", vol=3.0, masa_chasis=0.95, cap_max=4.00, costo=35),
-    P("Cohete Grande", "Caja grande. Límite: 12 kg.", "Para viajes a Marte.", vol=6.0, masa_chasis=1.80, cap_max=12.00, costo=70),
+    P("Cohete Pequeño", "Caja pequeña. Límite: 1.33 kg.", "Para misiones cortas.", vol=1.0, masa_chasis=0.35,
+      cap_max=1.33, costo=15),
+    P("Cohete Mediano", "Caja mediana. Límite: 4 kg.", "Equilibrado para la Luna.", vol=3.0, masa_chasis=0.95,
+      cap_max=4.00, costo=35),
+    P("Cohete Grande", "Caja grande. Límite: 12 kg.", "Para viajes a Marte.", vol=6.0, masa_chasis=1.80, cap_max=12.00,
+      costo=70),
 ]
 
 MECANISMOS = [
     P("Sin seguridad", "Peligroso.", "No se puede lanzar.", rbf=False, burn=False, masa=0.0, costo=0),
-    P("Seguridad completa", "Interruptor y cables.", "Obligatorio para despegar.", rbf=True, burn=True, masa=0.15, costo=20),
+    P("Seguridad completa", "Interruptor y cables.", "Obligatorio para despegar.", rbf=True, burn=True, masa=0.15,
+      costo=20),
 ]
 
 ORBITAS = [
     P("Cerca de la Tierra", "Órbita Baja (LEO).", "Cerca de casa.", factor=1.0, solar=1.0, enl=1.0, dv_req=0, rad=10),
     P("Sobre los Polos", "Órbita Polar.", "Ve todo el planeta.", factor=0.85, solar=1.0, enl=0.9, dv_req=250, rad=15),
-    P("Lejos de la Tierra", "Órbita Geoestacionaria.", "Fijo en el cielo.", factor=0.28, solar=1.0, enl=0.7, dv_req=1800, rad=25),
+    P("Lejos de la Tierra", "Órbita Geoestacionaria.", "Fijo en el cielo.", factor=0.28, solar=1.0, enl=0.7,
+      dv_req=1800, rad=25),
     P("La Luna", "Órbita Lunar.", "Nuestro satélite.", factor=0.22, solar=1.0, enl=0.45, dv_req=2200, rad=30),
     P("Marte", "Órbita Marciana.", "El planeta rojo.", factor=0.12, solar=0.8, enl=0.15, dv_req=3200, rad=45),
 ]
 
 LANZADORES = [
-    P("Cohete Electron", "El más pequeño.", "Solo va cerca de la Tierra.", cap=15.0, costo=50, img="COHETE__NIVEL1.png", empresa="Rocket Lab", altura=18),
-    P("Cohete Falcon 9", "Tamaño medio.", "Llega a la Luna.", cap=30.0, costo=140, img="COHETE_NIVEL2.png", empresa="SpaceX", altura=70),
-    P("Cohete Falcon Heavy", "El más potente.", "El único que llega a Marte.", cap=50.0, costo=330, img="COHETE_NIVEL3.png", empresa="SpaceX", altura=70),
+    P("Cohete Electron", "El más pequeño.", "Solo va cerca de la Tierra.", cap=15.0, costo=50, img="COHETE__NIVEL1.png",
+      empresa="Rocket Lab", altura=18),
+    P("Cohete Falcon 9", "Tamaño medio.", "Llega a la Luna.", cap=30.0, costo=140, img="COHETE_NIVEL2.png",
+      empresa="SpaceX", altura=70),
+    P("Cohete Falcon Heavy", "El más potente.", "El único que llega a Marte.", cap=50.0, costo=330,
+      img="COHETE_NIVEL3.png", empresa="SpaceX", altura=70),
 ]
 
 MOTORES = [
@@ -91,10 +146,14 @@ COMMS = [
 INSTRS = [
     P("Cámara", "Fotos.", "Para ver la Tierra.", tag="optico", masa=0.25, pot=2.5, datos=8, ciencia=55, costo=25),
     P("Radar", "Ve nubes.", "Para atmósferas.", tag="radar", masa=0.85, pot=11.0, datos=45, ciencia=80, costo=70),
-    P("Espectrómetro", "Analiza suelos.", "Para analizar planetas.", tag="espectro", masa=0.50, pot=4.5, datos=20, ciencia=85, costo=60),
-    P("Sensor Térmico", "Mide calor.", "Para medir temperatura.", tag="ir", masa=0.75, pot=7.5, datos=35, ciencia=95, costo=90),
-    P("Repetidor", "Repite datos.", "Para comunicaciones.", tag="comm", masa=0.40, pot=6.0, datos=5, ciencia=65, costo=45),
-    P("Detector", "Mide radiación.", "Para medir el espacio.", tag="particulas", masa=0.20, pot=1.5, datos=6, ciencia=65, costo=30),
+    P("Espectrómetro", "Analiza suelos.", "Para analizar planetas.", tag="espectro", masa=0.50, pot=4.5, datos=20,
+      ciencia=85, costo=60),
+    P("Sensor Térmico", "Mide calor.", "Para medir temperatura.", tag="ir", masa=0.75, pot=7.5, datos=35, ciencia=95,
+      costo=90),
+    P("Repetidor", "Repite datos.", "Para comunicaciones.", tag="comm", masa=0.40, pot=6.0, datos=5, ciencia=65,
+      costo=45),
+    P("Detector", "Mide radiación.", "Para medir el espacio.", tag="particulas", masa=0.20, pot=1.5, datos=6,
+      ciencia=65, costo=30),
 ]
 
 BLINDAJES = [
@@ -115,30 +174,48 @@ CATEGORIAS = [
     ("Protección", "blind", BLINDAJES),
 ]
 
-TAGS = {"optico": "Cámara", "radar": "Radar", "espectro": "Espectrómetro", "ir": "Sensor Térmico", "comm": "Repetidor", "particulas": "Detector"}
+TAGS = {"optico": "Cámara", "radar": "Radar", "espectro": "Espectrómetro", "ir": "Sensor Térmico", "comm": "Repetidor",
+        "particulas": "Detector"}
 
 MISIONES = [
-    {"nombre": "Vigía de la Tierra", "tipo": "Observación", "presupuesto": 180, "orbitas": [0, 1], "tags": ["optico", "radar", "ir"], "prot": 10, "cmin": 50,
-     "historia": "Ver cómo cambia el clima.", "necesitas": "Cámara, paneles pequeños y cohete Electron.", "mision_real": "Como Landsat.",
-     "recomendados": {"formato": 0, "motor": 1, "energia": 0, "comm": 0, "instr": 0, "blind": 0, "lanz": 0, "seguridad": 1, "orbita": 0}, "desc": "Vigilar la Tierra."},
-    {"nombre": "Comunicaciones", "tipo": "Comms", "presupuesto": 360, "orbitas": [2], "tags": ["comm"], "prot": 25, "cmin": 60,
-     "historia": "Llevar internet remoto.", "necesitas": "Repetidor, antena rápida y cohete Falcon 9.", "mision_real": "Satélites geoestacionarios.",
-     "recomendados": {"formato": 1, "motor": 1, "energia": 1, "comm": 2, "instr": 4, "blind": 1, "lanz": 1, "seguridad": 1, "orbita": 2}, "desc": "Fijo sobre la Tierra."},
-    {"nombre": "Explorador Lunar", "tipo": "Luna", "presupuesto": 480, "orbitas": [3], "tags": ["espectro", "radar", "particulas"], "prot": 30, "cmin": 70,
-     "historia": "Buscar hielo en la Luna.", "necesitas": "Motor iónico, blindaje medio y Falcon 9.", "mision_real": "CAPSTONE.",
-     "recomendados": {"formato": 1, "motor": 2, "energia": 1, "comm": 1, "instr": 2, "blind": 1, "lanz": 1, "seguridad": 1, "orbita": 3}, "desc": "Viajar a la Luna."},
-    {"nombre": "Estación de Relevo", "tipo": "Telemetría", "presupuesto": 230, "orbitas": [0], "tags": ["comm", "optico"], "prot": 10, "cmin": 55,
-     "historia": "Retransmitir datos.", "necesitas": "Repetidor, antena lenta y cohete Electron.", "mision_real": "TDRS.",
-     "recomendados": {"formato": 0, "motor": 0, "energia": 0, "comm": 0, "instr": 4, "blind": 0, "lanz": 0, "seguridad": 1, "orbita": 0}, "desc": "Órbita cercana."},
-    {"nombre": "Explorador de Marte", "tipo": "Marte", "presupuesto": 750, "orbitas": [4], "tags": ["espectro", "ir", "radar"], "prot": 45, "cmin": 80,
-     "historia": "Analizar Marte.", "necesitas": "Falcon Heavy, motor iónico, paneles y blindaje grueso.", "mision_real": "MarCO.",
-     "recomendados": {"formato": 2, "motor": 2, "energia": 2, "comm": 2, "instr": 3, "blind": 2, "lanz": 2, "seguridad": 1, "orbita": 4}, "desc": "Viaje interplanetario."},
+    {"nombre": "Vigía de la Tierra", "tipo": "Observación", "presupuesto": 180, "orbitas": [0, 1],
+     "tags": ["optico", "radar", "ir"], "prot": 10, "cmin": 50,
+     "historia": "Ver cómo cambia el clima.", "necesitas": "Cámara, paneles pequeños y cohete Electron.",
+     "mision_real": "Como Landsat.",
+     "recomendados": {"formato": 0, "motor": 1, "energia": 0, "comm": 0, "instr": 0, "blind": 0, "lanz": 0,
+                      "seguridad": 1, "orbita": 0}, "desc": "Vigilar la Tierra."},
+    {"nombre": "Comunicaciones", "tipo": "Comms", "presupuesto": 360, "orbitas": [2], "tags": ["comm"], "prot": 25,
+     "cmin": 60,
+     "historia": "Llevar internet remoto.", "necesitas": "Repetidor, antena rápida y cohete Falcon 9.",
+     "mision_real": "Satélites geoestacionarios.",
+     "recomendados": {"formato": 1, "motor": 1, "energia": 1, "comm": 2, "instr": 4, "blind": 1, "lanz": 1,
+                      "seguridad": 1, "orbita": 2}, "desc": "Fijo sobre la Tierra."},
+    {"nombre": "Explorador Lunar", "tipo": "Reparación lunar", "presupuesto": 480, "orbitas": [3],
+     "tags": ["espectro", "radar", "particulas"], "prot": 30, "cmin": 70,
+     "historia": "Misión de reparación de un repetidor lunar: el repetidor que enlaza la Luna con la Tierra dejó de funcionar y debes llegar a arreglarlo.",
+     "necesitas": "Motor iónico, blindaje medio y Falcon 9.", "mision_real": "CAPSTONE.",
+     "recomendados": {"formato": 1, "motor": 2, "energia": 1, "comm": 1, "instr": 2, "blind": 1, "lanz": 1,
+                      "seguridad": 1, "orbita": 3}, "desc": "Reparar un repetidor en la Luna."},
+    {"nombre": "Estación de Relevo", "tipo": "Telemetría", "presupuesto": 230, "orbitas": [0],
+     "tags": ["comm", "optico"], "prot": 10, "cmin": 55,
+     "historia": "Retransmitir datos.", "necesitas": "Repetidor, antena lenta y cohete Electron.",
+     "mision_real": "TDRS.",
+     "recomendados": {"formato": 0, "motor": 0, "energia": 0, "comm": 0, "instr": 4, "blind": 0, "lanz": 0,
+                      "seguridad": 1, "orbita": 0}, "desc": "Órbita cercana."},
+    {"nombre": "Explorador de Marte", "tipo": "Marte", "presupuesto": 750, "orbitas": [4],
+     "tags": ["espectro", "ir", "radar"], "prot": 45, "cmin": 80,
+     "historia": "Analizar Marte.", "necesitas": "Falcon Heavy, motor iónico, paneles y blindaje grueso.",
+     "mision_real": "MarCO.",
+     "recomendados": {"formato": 2, "motor": 2, "energia": 2, "comm": 2, "instr": 3, "blind": 2, "lanz": 2,
+                      "seguridad": 1, "orbita": 4}, "desc": "Viaje interplanetario."},
 ]
 
 cfg = {"zoom_extra": 1.0, "velocidad": 3}
 
+
 def nave_default():
     return {c[1]: 0 for c in CATEGORIAS}
+
 
 game = {"mision": None, "nave": nave_default()}
 player_start = (600, 450)
@@ -165,9 +242,11 @@ ETQ = {
     "solar": "sol x{}", "enl": "señal x{}", "dv_req": "necesita {} m/s", "rad": "radiación {}"
 }
 
+
 def detalle(c):
     partes = [ETQ[k].format(v) for k, v in c.items() if k in ETQ]
     return c["nombre"] + " (" + ", ".join(partes) + "). " + c["info"]
+
 
 def evaluar(idx_mision):
     n = game["nave"]
@@ -179,7 +258,8 @@ def evaluar(idx_mision):
     com, ins, bli = COMMS[n["comm"]], INSTRS[n["instr"]], BLINDAJES[n["blind"]]
 
     r = {"mis": mis}
-    r["masa"] = round(fmt["masa_chasis"] + seg["masa"] + mot["masa"] + ene["masa"] + com["masa"] + ins["masa"] + bli["masa"], 2)
+    r["masa"] = round(
+        fmt["masa_chasis"] + seg["masa"] + mot["masa"] + ene["masa"] + com["masa"] + ins["masa"] + bli["masa"], 2)
     r["cap"] = min(fmt["cap_max"], lan["cap"])
     r["consumo"] = round(BASE_POT + mot["pot"] + com["pot"] + ins["pot"], 2)
     r["gen"] = round(ene["gen"] * orb["solar"], 2)
@@ -197,25 +277,35 @@ def evaluar(idx_mision):
 
     # --- LISTA DE VERIFICACIÓN TRADUCIDA A LENGUAJE HUMANO ---
     chk = []
-    chk.append(("Peso permitido", r["masa"] <= r["cap"], "El cohete pesa demasiado. Usa un cohete más grande o quita equipo."))
+    chk.append(
+        ("Peso permitido", r["masa"] <= r["cap"], "El cohete pesa demasiado. Usa un cohete más grande o quita equipo."))
     chk.append(("Seguridad de vuelo", seg["rbf"] and seg["burn"], "Necesitas poner: Seguridad completa."))
-    chk.append(("Energía suficiente", r["gen"] >= r["consumo"], "No hay suficiente electricidad. Necesitas poner: Paneles mejores."))
-    chk.append(("Antena adecuada", r["enlace"] >= r["datos"], "La antena no puede enviar tantos datos. Necesitas poner: Antena más rápida."))
-    chk.append(("Movilidad (motor)", r["dv"] >= r["dv_req"], "El motor no tiene fuerza para llegar. Necesitas poner: Motor más potente."))
-    chk.append(("Protección", r["prot"] >= r["prot_req"], "Hay demasiada radiación. Necesitas poner: Blindaje más grueso."))
-    
+    chk.append(("Energía suficiente", r["gen"] >= r["consumo"],
+                "No hay suficiente electricidad. Necesitas poner: Paneles mejores."))
+    chk.append(("Antena adecuada", r["enlace"] >= r["datos"],
+                "La antena no puede enviar tantos datos. Necesitas poner: Antena más rápida."))
+    chk.append(("Movilidad (motor)", r["dv"] >= r["dv_req"],
+                "El motor no tiene fuerza para llegar. Necesitas poner: Motor más potente."))
+    chk.append(
+        ("Protección", r["prot"] >= r["prot_req"], "Hay demasiada radiación. Necesitas poner: Blindaje más grueso."))
+
     if mis:
-        chk.append(("Presupuesto", r["costo"] <= mis["presupuesto"], "Te pasaste del presupuesto. Usa piezas más baratas."))
-        chk.append(("Destino correcto", n["orbita"] in mis["orbitas"], "El destino no es el correcto para esta misión."))
+        chk.append(
+            ("Presupuesto", r["costo"] <= mis["presupuesto"], "Te pasaste del presupuesto. Usa piezas más baratas."))
+        chk.append(
+            ("Destino correcto", n["orbita"] in mis["orbitas"], "El destino no es el correcto para esta misión."))
         chk.append(("Instrumento correcto", tag_ok, "El instrumento no sirve para esta misión. Cambia el Instrumento."))
-        chk.append(("Ciencia mínima", r["ciencia"] >= mis["cmin"], "El instrumento no da suficiente ciencia. Usa uno mejor."))
-        
+        chk.append(
+            ("Ciencia mínima", r["ciencia"] >= mis["cmin"], "El instrumento no da suficiente ciencia. Usa uno mejor."))
+
     r["checks"] = chk
     r["ok"] = all(c[1] for c in chk)
     return r
 
+
 def puntaje(r):
     return int(300 + r["ciencia"] * 4 + (1 - r["costo"] / r["pres"]) * 300 + (1 - r["masa"] / r["cap"]) * 200)
+
 
 def hay_partida():
     try:
@@ -223,6 +313,7 @@ def hay_partida():
             return json.load(f).get("partida") is not None
     except (OSError, ValueError):
         return False
+
 
 def guardar(solo_opciones=False):
     data = {"opciones": cfg, "partida": None}
@@ -240,12 +331,14 @@ def guardar(solo_opciones=False):
     except OSError:
         pass
 
+
 def cargar_opciones():
     try:
         with open(SAVE_FILE, "r", encoding="utf-8") as f:
             cfg.update(json.load(f).get("opciones", {}))
     except (OSError, ValueError):
         pass
+
 
 # ======================================================================
 #  MAPA Y JUGADOR
@@ -261,6 +354,7 @@ player = Player("images/ASTRONAUTA.png", *player_start)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 def cargar_cohete(nombre):
     try:
         img = pygame.image.load(os.path.join(BASE_DIR, "images", nombre)).convert_alpha()
@@ -272,9 +366,11 @@ def cargar_cohete(nombre):
         img = img.subsurface(caja).copy()
     return img
 
+
 def escalar(img, factor):
     w, h = img.get_size()
     return pygame.transform.smoothscale(img, (max(1, int(w * factor)), max(1, int(h * factor))))
+
 
 COHETES_IMG = [cargar_cohete(l["img"]) for l in LANZADORES]
 ALTO_MAX = max(i.get_height() for i in COHETES_IMG)
@@ -294,10 +390,12 @@ INTERACTIVOS = {
 }
 cerca = None
 
+
 def clamp_camera(c, view_size, map_size):
     if view_size >= map_size:
         return -(view_size - map_size) // 2
     return max(0, min(c, map_size - view_size))
+
 
 def apply_zoom():
     global ZOOM, VIEW_W, VIEW_H, view
@@ -305,6 +403,7 @@ def apply_zoom():
     ZOOM = max(fx, fy) * cfg["zoom_extra"]
     VIEW_W, VIEW_H = int(SCREEN_W / ZOOM), int(SCREEN_H / ZOOM)
     view = pygame.Surface((VIEW_W, VIEW_H))
+
 
 cargar_opciones()
 apply_zoom()
@@ -319,11 +418,13 @@ aviso = ""
 sel_m = 0
 det_cat = "formato"
 
+
 def txt(s, f, color, pos, center=False, surf=None):
     surf = surf or ui
     img = f.render(s, True, color)
     r = img.get_rect(center=pos) if center else img.get_rect(topleft=pos)
     surf.blit(img, r)
+
 
 def wrap(s, f, width):
     lines, cur = [], ""
@@ -336,6 +437,7 @@ def wrap(s, f, width):
     if cur:
         lines.append(cur)
     return lines
+
 
 def button(rect, label, ident, enabled=True, selected=False):
     r = pygame.Rect(rect)
@@ -352,6 +454,7 @@ def button(rect, label, ident, enabled=True, selected=False):
     if enabled:
         clickables.append((r, ident))
 
+
 def ventana(titulo, rect=(80, 60, 640, 480)):
     r = pygame.Rect(rect)
     pygame.draw.rect(ui, (14, 22, 55), r, border_radius=10)
@@ -360,6 +463,7 @@ def ventana(titulo, rect=(80, 60, 640, 480)):
     pygame.draw.line(ui, (0, 200, 255), (r.x + 20, r.y + 54), (r.right - 20, r.y + 54), 1)
     return r
 
+
 def draw_menu():
     txt("SIMULADOR ESPACIAL", font_big, (0, 255, 255), (UI_W // 2, 110), center=True)
     txt("Construye tu Cohete", font_title, (255, 255, 0), (UI_W // 2, 175), center=True)
@@ -367,6 +471,7 @@ def draw_menu():
     button((250, 325, 300, 50), "Nuevo juego", "nuevo")
     button((250, 390, 300, 50), "Opciones", "opciones")
     button((250, 455, 300, 50), "Salir", "salir")
+
 
 def draw_opciones():
     txt("OPCIONES", font_big, (0, 255, 255), (UI_W // 2, 110), center=True)
@@ -379,6 +484,7 @@ def draw_opciones():
     txt(str(cfg["velocidad"]), font, (255, 255, 0), (565, 325), center=True)
     button((620, 305, 40, 40), "+", "vel+")
     button((250, 440, 300, 50), "Volver", "volver")
+
 
 def draw_world():
     global cerca
@@ -396,7 +502,8 @@ def draw_world():
     view.fill(BG)
     station_map.draw(view, camera)
     cohete = COHETES_HANGAR[game["nave"]["lanz"]]
-    view.blit(cohete, (CENTRO_HANGAR[0] - cohete.get_width() // 2 - cam_x, CENTRO_HANGAR[1] - cohete.get_height() // 2 - cam_y))
+    view.blit(cohete,
+              (CENTRO_HANGAR[0] - cohete.get_width() // 2 - cam_x, CENTRO_HANGAR[1] - cohete.get_height() // 2 - cam_y))
     if cerca:
         obj = INTERACTIVOS[cerca][0]
         pygame.draw.rect(view, (255, 255, 0), obj.move(-cam_x, -cam_y), 4)
@@ -408,7 +515,8 @@ def draw_world():
 
     mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "ninguna"
     nombre_cohete = LANZADORES[game["nave"]["lanz"]]["nombre"]
-    info = font.render(f"Misión: {mision}   |   Cohete: {nombre_cohete}   |   H: Glosario   |   ESC: Menú", True, (255, 255, 255))
+    info = font.render(f"Misión: {mision}   |   Cohete: {nombre_cohete}   |   H: Glosario   |   ESC: Menú", True,
+                       (255, 255, 255))
     pygame.draw.rect(screen, (0, 0, 0), (10, 10, info.get_width() + 20, 32), border_radius=4)
     screen.blit(info, (20, 17))
 
@@ -420,12 +528,14 @@ def draw_world():
         pygame.draw.rect(screen, (255, 255, 0), box, 2, border_radius=8)
         screen.blit(msg, msg.get_rect(center=box.center))
 
+
 def barra2(x, y, etiqueta, ratio, texto, ok):
     txt(etiqueta, font_s, (200, 200, 200), (x, y))
     pygame.draw.rect(ui, (40, 45, 70), (x + 82, y + 2, 110, 13), border_radius=4)
     color = (90, 220, 120) if ok else (255, 90, 90)
     pygame.draw.rect(ui, color, (x + 82, y + 2, int(110 * max(0.03, min(1.0, ratio))), 13), border_radius=4)
     txt(texto, font_s, (255, 255, 255), (x + 198, y))
+
 
 def draw_panel_mision():
     ventana("ELIGE TU MISIÓN")
@@ -434,19 +544,27 @@ def draw_panel_mision():
         button((100, 140 + i * 58, 240, 48), etiqueta, ("mision", i), selected=(sel_m == i))
     m = MISIONES[sel_m]
     x, y = 365, 135
-    txt(m["nombre"], font, (255, 255, 0), (x, y)); y += 26
-    txt(f"Tipo: {m['tipo']}", font_s, (200, 220, 255), (x, y)); y += 20
-    txt("Historia:", font_s, (255, 255, 0), (x, y)); y += 18
+    txt(m["nombre"], font, (255, 255, 0), (x, y));
+    y += 26
+    txt(f"Tipo: {m['tipo']}", font_s, (200, 220, 255), (x, y));
+    y += 20
+    txt("Historia:", font_s, (255, 255, 0), (x, y));
+    y += 18
     for l in wrap(m["historia"], font_s, 330):
-        txt(l, font_s, (200, 220, 255), (x, y)); y += 19
+        txt(l, font_s, (200, 220, 255), (x, y));
+        y += 19
     y += 4
-    txt("Qué necesitas:", font_s, (255, 255, 0), (x, y)); y += 18
+    txt("Qué necesitas:", font_s, (255, 255, 0), (x, y));
+    y += 18
     for l in wrap(m["necesitas"], font_s, 330):
-        txt(l, font_s, (200, 220, 255), (x, y)); y += 19
+        txt(l, font_s, (200, 220, 255), (x, y));
+        y += 19
     y += 4
-    txt("Misión real parecida:", font_s, (255, 255, 0), (x, y)); y += 18
+    txt("Misión real parecida:", font_s, (255, 255, 0), (x, y));
+    y += 18
     for l in wrap(m["mision_real"], font_s, 330):
-        txt(l, font_s, (170, 170, 190), (x, y)); y += 19
+        txt(l, font_s, (170, 170, 190), (x, y));
+        y += 19
     r = evaluar(sel_m)
     ok = sum(1 for c in r["checks"] if c[1])
     color = (90, 230, 120) if r["ok"] else (255, 190, 90)
@@ -454,17 +572,18 @@ def draw_panel_mision():
     button((365, 455, 200, 46), "Aceptar misión", "aceptar")
     button((580, 455, 120, 46), "Cerrar", "cerrar")
 
+
 def draw_panel_nave():
     global det_cat
     ventana("HANGAR - CONSTRUIR COHETE", (20, 15, 760, 570))
     mis = MISIONES[game["mision"]] if game["mision"] is not None else None
-    
+
     for i, (nombre, clave, lista) in enumerate(CATEGORIAS):
         y = 78 + i * 38
         fila = pygame.Rect(35, y, 395, 34)
         if fila.collidepoint(mouse_ui):
             det_cat = clave
-        
+
         if mis and clave in mis["recomendados"]:
             idx_rec = mis["recomendados"][clave]
             if game["nave"][clave] == idx_rec:
@@ -488,13 +607,13 @@ def draw_panel_nave():
     txt("Simple:", font_s, (255, 255, 0), (35, 420))
     for k, l in enumerate(wrap(actual["simple"], font_s, 395)[:2]):
         txt(l, font_s, (170, 200, 230), (35, 440 + k * 19))
-    
+
     if mis and det_cat in mis["recomendados"]:
         idx_rec = mis["recomendados"][det_cat]
         nom_rec = lista[idx_rec]["nombre"]
         if game["nave"][det_cat] != idx_rec:
             txt(f"Recomendado: {nom_rec}", font_s, (90, 230, 120), (35, 505))
-            
+
     txt("Ficha técnica:", font_s, (255, 255, 0), (35, 480))
     for k, l in enumerate(wrap(detalle(actual), font_s, 395)[:3]):
         txt(l, font_s, (200, 220, 255), (35, 500 + k * 17))
@@ -515,7 +634,8 @@ def draw_panel_nave():
     ]
     if mis:
         filas.append(("Costo", rat(r["costo"], r["pres"]), f"${r['costo']}/{r['pres']}M", r["costo"] <= r["pres"]))
-        filas.append(("Ciencia", rat(r["ciencia"], r["cmin"]), f"{r['ciencia']}/{r['cmin']}", r["ciencia"] >= r["cmin"]))
+        filas.append(
+            ("Ciencia", rat(r["ciencia"], r["cmin"]), f"{r['ciencia']}/{r['cmin']}", r["ciencia"] >= r["cmin"]))
     else:
         filas.append(("Costo", 0.0, f"${r['costo']}M", True))
 
@@ -530,7 +650,7 @@ def draw_panel_nave():
     else:
         msg, col = "¡Todo listo para volar!", (90, 230, 120)
     txt(msg, font_s, col, (X, 322))
-    
+
     if mis and fallos:
         for k, l in enumerate(wrap(fallos[0][0] + ": " + fallos[0][2], font_s, 315)[:3]):
             txt(l, font_s, (255, 200, 170), (X, 344 + k * 19))
@@ -540,27 +660,29 @@ def draw_panel_nave():
     button((445, 515, 200, 44), "Revisar vuelo", "evaluar", enabled=mis is not None)
     button((655, 515, 105, 44), "Cerrar", "cerrar")
 
+
 def draw_panel_cohete():
     ventana("ELIGE TU COHETE", (20, 15, 760, 570))
     actual = game["nave"]["lanz"]
     mis = MISIONES[game["mision"]] if game["mision"] is not None else None
-    
+
     if mis and "lanz" in mis["recomendados"]:
         idx_rec = mis["recomendados"]["lanz"]
         nom_rec = LANZADORES[idx_rec]["nombre"]
         txt(f"Para esta misión se recomienda: {nom_rec}", font, (90, 230, 120), (400, 65), center=True)
-    
+
     for i, l in enumerate(LANZADORES):
         x = 40 + i * 245
         carta = pygame.Rect(x, 76, 230, 454)
         elegido = (i == actual)
         hover = carta.collidepoint(mouse_ui)
         es_rec = mis and "lanz" in mis["recomendados"] and mis["recomendados"]["lanz"] == i
-        color_borde = (90, 230, 120) if es_rec else ((90, 230, 120) if elegido else ((255, 255, 0) if hover else (0, 130, 180)))
-        
+        color_borde = (90, 230, 120) if es_rec else (
+            (90, 230, 120) if elegido else ((255, 255, 0) if hover else (0, 130, 180)))
+
         pygame.draw.rect(ui, (20, 40, 80) if (hover or elegido) else (18, 28, 62), carta, border_radius=8)
         pygame.draw.rect(ui, color_borde, carta, 3 if elegido else 2, border_radius=8)
-        
+
         if es_rec:
             txt("★ RECOMENDADO", font_s, (90, 230, 120), (carta.centerx, 260), center=True)
 
@@ -572,9 +694,12 @@ def draw_panel_cohete():
             txt(linea, font_s, (170, 190, 215), (carta.x + 12, 318 + k * 19))
         for k, linea in enumerate(wrap(l["info"], font_s, 208)[:4]):
             txt(linea, font_s, (130, 150, 180), (carta.x + 12, 380 + k * 17))
-        txt(f"Cupo: {l['cap']:g} kg   Costo: ${l['costo']}M", font_s, (255, 255, 255), (carta.centerx, 462), center=True)
-        button((carta.x + 15, 482, 200, 36), "Elegido" if elegido else "Elegir este cohete", ("cohete", i), selected=elegido)
+        txt(f"Cupo: {l['cap']:g} kg   Costo: ${l['costo']}M", font_s, (255, 255, 255), (carta.centerx, 462),
+            center=True)
+        button((carta.x + 15, 482, 200, 36), "Elegido" if elegido else "Elegir este cohete", ("cohete", i),
+               selected=elegido)
     button((325, 540, 150, 36), "Volver", "atras")
+
 
 def draw_informe():
     r = evaluar(game["mision"])
@@ -582,17 +707,20 @@ def draw_informe():
     ventana("REVISIÓN FINAL DEL COHETE", (20, 15, 760, 570))
     exito = r["ok"]
     txt(mis["nombre"] + " - " + FORMATOS_CUBESAT[game["nave"]["formato"]]["nombre"], font, (255, 255, 255), (40, 82))
-    txt("LISTO PARA VOLAR" if exito else "NO APTO PARA VOLAR", font_title, (90, 230, 120) if exito else (255, 90, 90), (480, 78))
+    txt("LISTO PARA VOLAR" if exito else "NO APTO PARA VOLAR", font_title, (90, 230, 120) if exito else (255, 90, 90),
+        (480, 78))
     txt("Lista de revisión", font_s, (255, 255, 0), (40, 118))
     for i, (nombre, ok, _) in enumerate(r["checks"]):
-        txt(("[OK] " if ok else "[X]  ") + nombre, font_s, (90, 230, 120) if ok else (255, 100, 100), (40, 142 + i * 26))
+        txt(("[OK] " if ok else "[X]  ") + nombre, font_s, (90, 230, 120) if ok else (255, 100, 100),
+            (40, 142 + i * 26))
     txt("Resultado", font_s, (255, 255, 0), (420, 118))
     y = 142
     fallos = [c for c in r["checks"] if not c[1]]
     if exito:
         lineas = wrap("¡Felicidades! Tu cohete cumple con todos los requisitos para esta misión.", font_s, 330)
         for l in lineas:
-            txt(l, font_s, (170, 220, 190), (420, y)); y += 20
+            txt(l, font_s, (170, 220, 190), (420, y));
+            y += 20
     else:
         for nombre, _, causa in fallos:
             for l in wrap("- " + causa, font_s, 335):
@@ -604,7 +732,8 @@ def draw_informe():
         sobra = r["pres"] - r["costo"]
         pts = puntaje(r)
         txt(f"Puntuación: {pts} puntos", font_title, (255, 255, 0), (40, 440))
-        txt(f"Ciencia {r['ciencia']}  |  Sobra ${sobra}M  |  Peso libre {round(r['cap'] - r['masa'], 2)} kg", font_s, (200, 220, 255), (40, 478))
+        txt(f"Ciencia {r['ciencia']}  |  Sobra ${sobra}M  |  Peso libre {round(r['cap'] - r['masa'], 2)} kg", font_s,
+            (200, 220, 255), (40, 478))
     else:
         txt(f"Puntuación parcial: {sum(1 for c in r['checks'] if c[1]) * 30}", font_title, (255, 150, 90), (40, 440))
         txt("Usa el botón 'Sugerir arreglo' en el Hangar.", font_s, (200, 220, 255), (40, 478))
@@ -612,6 +741,7 @@ def draw_informe():
         button((40, 515, 390, 44), "¡DESPEGAR!", "despegar")
     button((450, 515, 190, 44), "Volver al hangar", "taller")
     button((655, 515, 105, 44), "Cerrar", "cerrar")
+
 
 def draw_glosario():
     ventana("GLOSARIO - ¿QUÉ SIGNIFICA?", (40, 30, 720, 540))
@@ -621,6 +751,7 @@ def draw_glosario():
         for k, l in enumerate(wrap(definicion, font_s, 560)[:2]):
             txt(l, font_s, (200, 220, 255), (70, y + 22 + k * 18))
     button((320, 520, 160, 36), "Cerrar", "cerrar_glosario")
+
 
 # ======================================================================
 #  ACCIONES
@@ -642,6 +773,7 @@ def iniciar(continuar):
         except (OSError, ValueError, KeyError, TypeError):
             pass
     estado = ESTACION
+
 
 def on_click(ident):
     global estado, running, sel_m, aviso, det_cat
@@ -701,6 +833,7 @@ def on_click(ident):
             estado = ESTACION
         aviso = ""
 
+
 def iniciar_despegue():
     """Arranca la animación SOLO si todos los componentes son correctos."""
     global estado, anim
@@ -716,14 +849,15 @@ def iniciar_despegue():
     keys_down.clear()
     estado = DESPEGUE
 
+
 def pulsar_despegue():
-    """Primer toque: salta al final. Segundo toque: vuelve a la estación."""
-    global estado, anim
+    """Primer toque: salta al final de la animación. Después pasa a VIAJE EN PROGRESO."""
+    global anim
     if anim is not None and not anim.terminado:
         anim.saltar()
     else:
-        anim = None
-        estado = ESTACION
+        iniciar_viaje()
+
 
 def sugerir_arreglo():
     """Aplica TODOS los componentes recomendados de golpe."""
@@ -731,13 +865,312 @@ def sugerir_arreglo():
     if game["mision"] is None:
         return
     mis = MISIONES[game["mision"]]
-    
+
     # Aplicar todos los componentes ideales
     for clave, idx in mis["recomendados"].items():
         game["nave"][clave] = idx
-        
+
     aviso = "¡He colocado los componentes ideales para esta misión!"
     guardar()
+
+
+# ----------------------------------------------------------------------
+#  VIAJE EN PROGRESO  ->  PANTALLA NEGRA  ->  ESCENA LUNAR
+# ----------------------------------------------------------------------
+def regresar_estacion():
+    global estado
+    keys_down.clear()
+    player.x, player.y = player_start
+    estado = ESTACION
+
+
+def iniciar_viaje():
+    global estado, anim, viaje_t0
+    anim = None
+    keys_down.clear()
+    viaje_t0 = pygame.time.get_ticks()
+    estado = VIAJE
+
+
+def saltar_viaje():
+    """Salta el texto y pasa directo a la pantalla negra."""
+    global viaje_t0
+    limite = pygame.time.get_ticks() - int(T_TEXTO * 1000)
+    if viaje_t0 > limite:
+        viaje_t0 = limite
+
+
+def txt_screen(s, f, color, pos):
+    img = f.render(s, True, color)
+    screen.blit(img, img.get_rect(center=pos))
+
+
+def draw_viaje():
+    t = (pygame.time.get_ticks() - viaje_t0) / 1000.0
+    if t >= T_TEXTO + T_FADE + T_NEGRO:
+        screen.fill((0, 0, 0))
+        if not iniciar_luna():
+            regresar_estacion()
+        return
+
+    screen.fill((5, 5, 15))
+    for x0, y0, vel, tam in ESTRELLAS:
+        x = int(((x0 - t * vel) % 1.0) * SCREEN_W)
+        pygame.draw.rect(screen, (200, 200, 255), (x, int(y0 * SCREEN_H), tam, tam))
+
+    n = game["nave"]
+    mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "-"
+    cx = SCREEN_W // 2
+    txt_screen("VIAJE EN PROGRESO", font_big, (0, 255, 255), (cx, int(SCREEN_H * 0.30)))
+    txt_screen("Misión: " + mision, font_title, (255, 255, 0), (cx, int(SCREEN_H * 0.42)))
+    txt_screen("Cohete: " + LANZADORES[n["lanz"]]["nombre"], font_title, (255, 255, 255), (cx, int(SCREEN_H * 0.49)))
+    txt_screen("Destino: " + ORBITAS[n["orbita"]]["nombre"], font_title, (255, 255, 255), (cx, int(SCREEN_H * 0.56)))
+
+    # barra de progreso del viaje
+    bw, bh = 500, 16
+    bx, by = cx - bw // 2, int(SCREEN_H * 0.66)
+    pygame.draw.rect(screen, (40, 45, 70), (bx, by, bw, bh), border_radius=6)
+    pygame.draw.rect(screen, (0, 200, 255), (bx, by, int(bw * min(1.0, t / T_TEXTO)), bh), border_radius=6)
+    txt_screen("Click o ESPACIO para continuar", font_s, (150, 150, 170), (cx, by + 40))
+
+    if t > T_TEXTO:
+        negro.set_alpha(int(255 * min(1.0, (t - T_TEXTO) / T_FADE)))
+        screen.blit(negro, (0, 0))
+
+
+def es_llama(c):
+    r, g, b, a = c
+    return a > 40 and r > 190 and b < 110 and r > g + 25
+
+
+def sin_llama(img):
+    """Quita la llama del motor (parte de abajo del cohete vertical) para que no se vea encendida."""
+    w, h = img.get_size()
+    y = h - 1
+    while y >= 0:
+        opacos = llama = 0
+        for x in range(0, w, 2):
+            c = img.get_at((x, y))
+            if c[3] > 40:
+                opacos += 1
+                if es_llama(c):
+                    llama += 1
+        if opacos == 0 or llama / opacos >= 0.5:
+            y -= 1
+        else:
+            break
+    if y + 1 < h * 0.5 or y + 1 >= h:
+        return img  # no había llama (o la detección falló): se deja igual
+    return img.subsurface((0, 0, w, y + 1)).copy()
+
+
+def cargar_robots(alto_px):
+    """Devuelve (robot roto, robot reparado) escalados con el mismo factor."""
+
+    def cargar(nombre, color):
+        try:
+            img = pygame.image.load(os.path.join(BASE_DIR, "images", nombre)).convert_alpha()
+            caja = img.get_bounding_rect()
+            if caja.width > 0 and caja.height > 0:
+                img = img.subsurface(caja).copy()
+            return img
+        except (pygame.error, FileNotFoundError, OSError):
+            print("No se encontró", nombre, "en la carpeta images")
+            img = pygame.Surface((80, 120), pygame.SRCALPHA)
+            img.fill(color)
+            return img
+
+    roto = cargar(ROBOT_ROTO, (200, 80, 80, 255))
+    ok = cargar(ROBOT_REPARADO, (80, 200, 120, 255))
+    factor = alto_px / roto.get_height()
+    return escalar(roto, factor), escalar(ok, factor)
+
+
+def cargar_luna():
+    """Carga el mapa lunar, el cohete, el robot y coloca al jugador. False si no hay mapa."""
+    global luna_map, luna_cohete, luna_cohete_pos, COHETES_HORIZ
+    global robot_roto, robot_ok, robot_rect, robot_zona, robot_reparado, reparar_t0, reparado_t
+    n = game["nave"]
+    archivo = DESTINO_FONDO.get(n["orbita"])
+    if archivo is None:
+        return False
+    ruta = os.path.join(BASE_DIR, "images", archivo)
+    try:
+        w, h = pygame.image.load(ruta).get_size()
+    except (pygame.error, FileNotFoundError, OSError) as e:
+        print("No se pudo cargar el mapa lunar:", e)
+        return False
+
+    # Robot al fondo derecho
+    robot_roto, robot_ok = cargar_robots(int(h * ROBOT_ALTO))
+    rrw, rrh = robot_roto.get_size()
+    robot_rect = pygame.Rect(int(w * ROBOT_X) - rrw // 2, int(h * ROBOT_BASE_Y) - rrh, rrw, rrh)
+    robot_zona = robot_rect.inflate(220, 180)
+    robot_reparado, reparar_t0, reparado_t = False, None, 0
+
+    try:
+        g = max(4, w // 100)
+        # COLISIONES PROVISIONALES: bordes, cielo/montañas (el suelo empieza ~54% de la altura) y el robot
+        luna_solidos = [
+            (0, 0, w, g), (0, h - g, w, g), (0, 0, g, h), (w - g, 0, g, h),
+            (0, 0, w, int(h * 0.54)),
+            (robot_rect.x, robot_rect.bottom - int(rrh * 0.4), rrw, int(rrh * 0.4)),
+        ]
+        luna_map = ImageMap(ruta, luna_solidos)
+    except (pygame.error, FileNotFoundError, OSError) as e:
+        print("No se pudo cargar el mapa lunar:", e)
+        return False
+
+    # Cohetes sin llama y acostados (nariz hacia la derecha), una sola vez
+    if COHETES_HORIZ is None:
+        COHETES_HORIZ = [pygame.transform.rotate(sin_llama(i), -90) for i in COHETES_IMG]
+    mw = max(i.get_width() for i in COHETES_HORIZ)
+    mh = max(i.get_height() for i in COHETES_HORIZ)
+    factor = min(LUNA_LARGO * w / mw, LUNA_GROSOR * h / mh)
+    luna_cohete = escalar(COHETES_HORIZ[n["lanz"]], factor)
+    rw, rh = luna_cohete.get_size()
+    cx, cy = int(w * LUNA_CX), int(h * LUNA_CY)
+    luna_cohete_pos = (cx - rw // 2, cy - rh // 2)
+
+    # El personaje aparece enfrente (a la derecha) de la nariz del cohete
+    player.x = cx + rw // 2 + 45
+    player.y = cy - player.image.get_height() // 2 + 30
+    return True
+
+
+def iniciar_luna():
+    global estado, luna_t0, luna_fase
+    if not cargar_luna():
+        return False
+    keys_down.clear()
+    luna_t0 = pygame.time.get_ticks()
+    luna_fase = "bajando"
+    estado = LUNA
+    return True
+
+
+def update_luna():
+    global luna_fase, reparar_t0, robot_reparado, reparado_t
+    ahora = pygame.time.get_ticks()
+    t = (ahora - luna_t0) / 1000.0
+    if luna_fase == "bajando":
+        if t >= LUNA_DEMORA + LUNA_LLEGADA:
+            luna_fase = "listo"
+        return
+    cerca_robot = player.rect().colliderect(robot_zona)
+    if cerca_robot and pygame.K_e in keys_down and not robot_reparado:
+        # Manteniendo E junto al robot: el astronauta se queda quieto mientras repara
+        if reparar_t0 is None:
+            reparar_t0 = ahora
+        if (ahora - reparar_t0) / 1000.0 >= T_REPARAR:
+            robot_reparado = True
+            reparado_t = ahora
+            reparar_t0 = None
+    else:
+        reparar_t0 = None
+        player.update(luna_map)
+
+
+def caja_texto(msg, color, midbottom=None, midtop=None):
+    img = font.render(msg, True, color)
+    box = pygame.Rect(0, 0, img.get_width() + 40, 44)
+    if midbottom:
+        box.midbottom = midbottom
+    else:
+        box.midtop = midtop
+    pygame.draw.rect(screen, (0, 0, 0), box, border_radius=8)
+    pygame.draw.rect(screen, color, box, 2, border_radius=8)
+    screen.blit(img, img.get_rect(center=box.center))
+
+
+def draw_luna():
+    global luna_view
+    ahora = pygame.time.get_ticks()
+    t = (ahora - luna_t0) / 1000.0
+    zoom = max(SCREEN_W / luna_map.width, SCREEN_H / luna_map.height) * cfg["zoom_extra"]
+    vw, vh = int(SCREEN_W / zoom), int(SCREEN_H / zoom)
+    if luna_view is None or luna_view.get_size() != (vw, vh):
+        luna_view = pygame.Surface((vw, vh))
+
+    cam_x = clamp_camera(int(player.x) + player.image.get_width() // 2 - vw // 2, vw, luna_map.width)
+    cam_y = clamp_camera(int(player.y) + player.image.get_height() // 2 - vh // 2, vh, luna_map.height)
+    camera = (cam_x, cam_y)
+
+    luna_view.fill((0, 0, 0))
+    luna_map.draw(luna_view, camera)
+
+    # Cohete: llega volando horizontalmente desde la izquierda (la cola, sin llama, entra primero)
+    rx_final, ry = luna_cohete_pos
+    rw = luna_cohete.get_width()
+    if luna_fase == "bajando":
+        p = max(0.0, min(1.0, (t - LUNA_DEMORA) / LUNA_LLEGADA))
+        e = 1 - (1 - p) ** 3
+        rx_ini = cam_x - rw - 30
+        rx = int(rx_ini + (rx_final - rx_ini) * e)
+    else:
+        rx = rx_final
+    luna_view.blit(luna_cohete, (rx - cam_x, ry - cam_y))
+
+    # Robot (roto o reparado) y personaje, ordenados por profundidad
+    robot_img = robot_ok if robot_reparado else robot_roto
+    rr = robot_img.get_rect(midbottom=robot_rect.midbottom)
+
+    def pintar_robot():
+        luna_view.blit(robot_img, (rr.x - cam_x, rr.y - cam_y))
+
+    def pintar_player():
+        for s in sprites:
+            s.draw(luna_view, camera)
+
+    if luna_fase == "listo":
+        if player.y + player.image.get_height() < robot_rect.bottom:
+            pintar_player()
+            pintar_robot()
+        else:
+            pintar_robot()
+            pintar_player()
+        if pygame.K_F1 in keys_down:
+            luna_map.draw_debug(luna_view, camera)
+    else:
+        pintar_robot()
+
+    screen.blit(pygame.transform.smoothscale(luna_view, (SCREEN_W, SCREEN_H)), (0, 0))
+
+    # HUD
+    n = game["nave"]
+    mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "-"
+    extra = "Llegando a la Luna..." if luna_fase == "bajando" else "WASD: caminar   E: interactuar"
+    info = font.render(
+        f"Misión: {mision}   |   Destino: {ORBITAS[n['orbita']]['nombre']}   |   {extra}   |   ESC: volver",
+        True, (255, 255, 255))
+    pygame.draw.rect(screen, (0, 0, 0), (10, 10, info.get_width() + 20, 32), border_radius=4)
+    screen.blit(info, (20, 17))
+
+    # Interacción con el robot
+    if luna_fase == "listo":
+        if reparar_t0 is not None:
+            prog = min(1.0, (ahora - reparar_t0) / 1000.0 / T_REPARAR)
+            bw = 360
+            box = pygame.Rect(0, 0, bw + 40, 74)
+            box.midbottom = (SCREEN_W // 2, SCREEN_H - 40)
+            pygame.draw.rect(screen, (0, 0, 0), box, border_radius=8)
+            pygame.draw.rect(screen, (255, 255, 0), box, 2, border_radius=8)
+            img = font.render(f"Reparando robot...  {int(prog * 100)}%", True, (255, 255, 0))
+            screen.blit(img, img.get_rect(midtop=(box.centerx, box.y + 10)))
+            pygame.draw.rect(screen, (40, 45, 70), (box.x + 20, box.y + 44, bw, 16), border_radius=6)
+            pygame.draw.rect(screen, (90, 230, 120), (box.x + 20, box.y + 44, int(bw * prog), 16), border_radius=6)
+        elif not robot_reparado and player.rect().colliderect(robot_zona):
+            caja_texto(f"Mantén [E] {T_REPARAR:g} segundos para reparar el robot", (255, 255, 0),
+                       midbottom=(SCREEN_W // 2, SCREEN_H - 40))
+        if robot_reparado and ahora - reparado_t < 4000:
+            caja_texto("¡Robot reparado!", (90, 230, 120), midtop=(SCREEN_W // 2, 60))
+
+    # entrada desde negro
+    alpha = max(0, 255 - int(255 * t / 1.0))
+    if alpha > 0:
+        negro.set_alpha(alpha)
+        screen.blit(negro, (0, 0))
+
 
 # ======================================================================
 #  BUCLE PRINCIPAL
@@ -756,7 +1189,6 @@ while running:
     mx, my = pygame.mouse.get_pos()
     mouse_ui = (mx - OFF_X, my - OFF_Y)
 
-
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -765,14 +1197,24 @@ while running:
             if estado == DESPEGUE:
                 if event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_ESCAPE):
                     pulsar_despegue()
+            elif estado == VIAJE:
+                if event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_ESCAPE):
+                    saltar_viaje()
+            elif estado == LUNA:
+                if event.key == pygame.K_ESCAPE:
+                    regresar_estacion()
             elif event.key == pygame.K_ESCAPE:
-                if estado == MENU: running = False
-                elif estado == OPCIONES: on_click("volver")
+                if estado == MENU:
+                    running = False
+                elif estado == OPCIONES:
+                    on_click("volver")
                 elif estado == ESTACION:
                     guardar()
                     estado = MENU
-                elif estado == GLOSARIO: on_click("cerrar_glosario")
-                else: on_click("cerrar")
+                elif estado == GLOSARIO:
+                    on_click("cerrar_glosario")
+                else:
+                    on_click("cerrar")
             elif event.key == pygame.K_h and estado in (ESTACION, PANEL_NAVE, PANEL_MISION):
                 estado = GLOSARIO
             elif event.key == pygame.K_e and estado == ESTACION and cerca:
@@ -786,6 +1228,8 @@ while running:
             pos = (event.pos[0] - OFF_X, event.pos[1] - OFF_Y)
             if estado == DESPEGUE:
                 pulsar_despegue()
+            elif estado == VIAJE:
+                saltar_viaje()
             else:
                 for rect, ident in list(clickables):
                     if rect.collidepoint(pos):
@@ -806,7 +1250,15 @@ while running:
         draw_opciones()
     elif estado == DESPEGUE:
         anim.update()
-        anim.draw()
+        if anim.terminado:
+            iniciar_viaje()  # en vez del mensaje de "misión completada"
+        else:
+            anim.draw()
+    elif estado == VIAJE:
+        draw_viaje()
+    elif estado == LUNA:
+        update_luna()
+        draw_luna()
     else:
         draw_world()
         if estado in (PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO):

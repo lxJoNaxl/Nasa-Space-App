@@ -1,1 +1,1 @@
-{"opciones": {"zoom_extra": 1.0, "velocidad": 6}, "partida": {"x": 1116, "y": 966, "mision": null, "nave": {"motor": 2, "carga": 0, "blind": 2}}}
+{"opciones": {"zoom_extra": 1.1, "velocidad": 6}, "partida": {"x": 1658, "y": 998, "mision": 1, "nave": {"formato": 2, "seguridad": 1, "orbita": 0, "lanz": 1, "motor": 1, "energia": 0, "comm": 1, "instr": 0, "blind": 2}}}

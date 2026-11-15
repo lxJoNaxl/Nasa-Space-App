@@ -10,6 +10,7 @@ from player import Player
 from input import keys_down
 from map import ImageMap
 from despegue import Despegue
+from dron import DronMarte
 
 # ======================================================================
 #  INICIALIZACIÓN
@@ -44,7 +45,7 @@ estado = MENU
 # ----------------------------------------------------------------------
 #  VIAJE Y ESCENA LUNAR
 # ----------------------------------------------------------------------
-DESTINO_FONDO = {3: "FondoEspacio.png"}  # índice de ORBITAS -> imagen del mapa (en /images)
+DESTINO_FONDO = {3: "FondoEspacio.png", 4: "Escena_Marte.jpeg"}  # índice de ORBITAS -> imagen del mapa (en /images)
 T_TEXTO = 3.5  # segundos mostrando "VIAJE EN PROGRESO"
 T_FADE = 0.8  # segundos que tarda en ponerse negra la pantalla
 T_NEGRO = 0.8  # segundos que se queda en negro
@@ -56,6 +57,12 @@ LUNA_CX = 0.092  # centro horizontal del cohete
 LUNA_CY = 0.575  # centro vertical del cohete
 LUNA_LARGO = 0.165  # largo del cohete más grande (fracción del ancho del mapa)
 LUNA_GROSOR = 0.15  # grosor máximo (fracción del alto del mapa)
+
+# Escena de Marte (índice 4 de ORBITAS). Las imágenes van en /images
+MARTE_ORBITA = 4
+DRON_PNG = "dron.png"
+MARTE_CX = 0.12  # centro horizontal del cohete en Marte
+MARTE_CY = 0.76  # centro vertical del cohete en Marte (sobre el suelo)
 
 # Robot al fondo derecho del mapa (imágenes dentro de /images)
 ROBOT_ROTO = "ROBOT(ROTO).png"
@@ -102,6 +109,8 @@ luna_view = None
 luna_cohete = None
 luna_cohete_pos = (0, 0)
 luna_fase = "bajando"
+dron = None  # DronMarte (solo en la misión a Marte)
+es_marte = False
 COHETES_HORIZ = None  # cohetes SIN estela y acostados (se calculan una vez)
 robot_roto = robot_ok = None
 robot_rect = pygame.Rect(0, 0, 1, 1)
@@ -1590,7 +1599,7 @@ def cargar_luna(restaurar=None):
     """Carga mapa, cohete, robot, objetos y personaje. 'restaurar' = datos guardados de una misión en curso."""
     global luna_map, luna_cohete, luna_cohete_llama, luna_cohete_pos, COHETES_HORIZ, COHETES_HORIZ_LL
     global robot_roto, robot_ok, robot_rect, robot_zona, robot_reparado, reparar_t0, reparado_t
-    global luna_items, nave_rect, nave_zona, astro_win
+    global luna_items, nave_rect, nave_zona, astro_win, dron, es_marte
     n = game["nave"]
     archivo = DESTINO_FONDO.get(n["orbita"])
     if archivo is None:
@@ -1602,10 +1611,19 @@ def cargar_luna(restaurar=None):
         print("No se pudo cargar el mapa lunar:", e)
         return False
 
-    # Robot al fondo derecho
-    robot_roto, robot_ok = cargar_robots(int(h * ROBOT_ALTO))
-    rrw, rrh = robot_roto.get_size()
-    robot_rect = pygame.Rect(int(w * ROBOT_X) - rrw // 2, int(h * ROBOT_BASE_Y) - rrh, rrw, rrh)
+    es_marte = n["orbita"] == MARTE_ORBITA
+    if es_marte:
+        # Marte: en vez del robot hay un dron posado (robot_rect = dron posado)
+        dron = DronMarte(os.path.join(BASE_DIR, "images", DRON_PNG), w, h)
+        robot_roto = robot_ok = None
+        robot_rect = dron.rect_suelo.copy()
+        rrw, rrh = robot_rect.size
+    else:
+        dron = None
+        # Robot al fondo derecho
+        robot_roto, robot_ok = cargar_robots(int(h * ROBOT_ALTO))
+        rrw, rrh = robot_roto.get_size()
+        robot_rect = pygame.Rect(int(w * ROBOT_X) - rrw // 2, int(h * ROBOT_BASE_Y) - rrh, rrw, rrh)
     robot_zona = robot_rect.inflate(220, 180)
     robot_reparado, reparar_t0, reparado_t = False, None, 0
 
@@ -1635,7 +1653,8 @@ def cargar_luna(restaurar=None):
     luna_cohete = escalar(COHETES_HORIZ[n["lanz"]], factor)
     luna_cohete_llama = escalar(COHETES_HORIZ_LL[n["lanz"]], factor)
     rw, rh = luna_cohete.get_size()
-    cx, cy = int(w * LUNA_CX), int(h * LUNA_CY)
+    cx_f, cy_f = (MARTE_CX, MARTE_CY) if es_marte else (LUNA_CX, LUNA_CY)
+    cx, cy = int(w * cx_f), int(h * cy_f)
     luna_cohete_pos = (cx - rw // 2, cy - rh // 2)
     nave_rect = pygame.Rect(luna_cohete_pos, (rw, rh))
     nave_zona = nave_rect.inflate(160, 160)
@@ -1649,10 +1668,12 @@ def cargar_luna(restaurar=None):
 
     # Objetos aleatorios (evitando colisiones, cohete, robot y el punto de aparición)
     evitar = [pygame.Rect(*sol) for sol in luna_solidos] + [nave_zona, robot_zona, spawn.inflate(160, 160)]
-    luna_items = generar_items(w, h, evitar, restaurar.get("items") if restaurar else None)
+    luna_items = [] if es_marte else generar_items(w, h, evitar, restaurar.get("items") if restaurar else None)
 
     if restaurar:
         robot_reparado = bool(restaurar.get("reparado"))
+        if es_marte and robot_reparado:
+            dron.fase = "hecho"  # el dron ya volvió y está posado
         player.x = restaurar.get("px", player.x)
         player.y = restaurar.get("py", player.y)
     return True
@@ -1692,10 +1713,17 @@ def salir_luna_al_menu():
 
 
 def interactuar_luna():
-    """Tecla E (pulsación): recoger un objeto cercano o subir a la nave si el robot ya está reparado."""
+    """Tecla E (pulsación): recoger un objeto cercano, desplegar el dron (Marte) o subir a la nave."""
+    global luna_fase
     if luna_fase != "listo":
         return
     prect = player.rect()
+    if es_marte and dron is not None and not robot_reparado and prect.colliderect(robot_zona):
+        keys_down.clear()
+        player.reposo()
+        dron.iniciar()
+        luna_fase = "dron"
+        return
     for it in luna_items:
         if not it["ok"] and prect.colliderect(it["rect"].inflate(90, 90)):
             it["ok"] = True
@@ -1749,10 +1777,20 @@ def update_luna():
             luna_fase = "listo"
         return
 
+    if luna_fase == "dron":
+        # El astronauta mira mientras el dron hace su expedición; al volver se puede regresar a la nave
+        player.reposo()
+        dron.update()
+        if dron.hecho:
+            robot_reparado = True  # aquí significa "objetivo cumplido"
+            reparado_t = ahora
+            luna_fase = "listo"
+        return
+
     if luna_fase == "listo":
         cerca_robot = player.rect().colliderect(robot_zona)
         todos = all(it["ok"] for it in luna_items)
-        if cerca_robot and todos and pygame.K_e in keys_down and not robot_reparado:
+        if cerca_robot and todos and pygame.K_e in keys_down and not robot_reparado and not es_marte:
             # Manteniendo E junto al robot: el astronauta se queda quieto mientras repara
             player.reposo()
             if reparar_t0 is None:
@@ -1790,7 +1828,10 @@ def caja_texto(msg, color, midbottom=None, midtop=None):
 
 def hud_objetivo():
     """Mensaje arriba a la derecha: cuántos objetos llevas, o REGRESO A CASA."""
-    if robot_reparado:
+    if es_marte and not robot_reparado:
+        lineas = [("Objetivo: expedición del dron", (255, 255, 0)),
+                  ("[  ] Desplegar el dron", (200, 200, 200))]
+    elif robot_reparado:
         lineas = [("REGRESO A CASA", (90, 230, 120))]
     else:
         n_ok = sum(1 for it in luna_items if it["ok"])
@@ -1855,10 +1896,13 @@ def draw_luna():
 
     # ---- Objetos, robot y personaje ----
     robot_img = robot_ok if robot_reparado else robot_roto
-    rr = robot_img.get_rect(midbottom=robot_rect.midbottom)
+    rr = robot_img.get_rect(midbottom=robot_rect.midbottom) if robot_img is not None else robot_rect
 
     def pintar_robot():
-        luna_view.blit(robot_img, (rr.x - cam_x, rr.y - cam_y))
+        if dron is not None:
+            dron.draw(luna_view, camera)
+        else:
+            luna_view.blit(robot_img, (rr.x - cam_x, rr.y - cam_y))
 
     def pintar_items():
         for it in luna_items:
@@ -1905,7 +1949,7 @@ def draw_luna():
 
     # ---- HUD ----
     mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "-"
-    extra = "Llegando a la Luna..." if luna_fase == "bajando" else "WASD o flechas: caminar   E: interactuar"
+    extra = ("Llegando a " + ("Marte" if es_marte else "la Luna") + "...") if luna_fase == "bajando" else "WASD o flechas: caminar   E: interactuar"
     info = font.render(f"Misión: {mision}   |   {extra}   |   ESC: menú", True, (255, 255, 255))
     pygame.draw.rect(screen, (0, 0, 0), (10, 10, info.get_width() + 20, 32), border_radius=4)
     screen.blit(info, (20, 17))
@@ -1933,6 +1977,8 @@ def draw_luna():
             screen.blit(img, img.get_rect(midtop=(box.centerx, box.y + 10)))
             pygame.draw.rect(screen, (40, 45, 70), (box.x + 20, box.y + 44, bw, 16), border_radius=6)
             pygame.draw.rect(screen, (90, 230, 120), (box.x + 20, box.y + 44, int(bw * prog), 16), border_radius=6)
+        elif es_marte and not robot_reparado and prect.colliderect(robot_zona):
+            caja_texto("[E]  Desplegar el dron", (255, 255, 0), midbottom=base)
         elif not robot_reparado and prect.colliderect(robot_zona):
             if todos:
                 caja_texto(f"Mantén [E] {T_REPARAR:g} segundos para reparar el robot", (255, 255, 0), midbottom=base)
@@ -1942,7 +1988,11 @@ def draw_luna():
         elif robot_reparado and prect.colliderect(nave_zona):
             caja_texto("[E]  Volver a la Tierra", (90, 230, 120), midbottom=base)
         if robot_reparado and ahora - reparado_t < 4000:
-            caja_texto("¡Robot reparado! Regresa a la nave", (90, 230, 120), midtop=(SCREEN_W // 2, 60))
+            caja_texto("¡Expedición completada! Regresa a la nave" if es_marte
+                       else "¡Robot reparado! Regresa a la nave", (90, 230, 120), midtop=(SCREEN_W // 2, 60))
+
+    if luna_fase == "dron" and dron is not None:
+        dron.dibujar_hud(screen, font, SCREEN_W, SCREEN_H)
 
     # ---- Fundidos: entrada desde negro / salida hacia la Tierra ----
     alpha = max(0, 255 - int(255 * t / 1.0))

@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import random
 import pygame
@@ -35,7 +36,7 @@ menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
 (MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME,
- PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA) = range(11)
+ PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA, MISION_OK) = range(12)
 anim = None  # animación de despegue activa
 estado = MENU
 
@@ -63,6 +64,24 @@ ROBOT_BASE_Y = 0.75  # donde apoya los pies (fracción del alto del mapa)
 ROBOT_ALTO = 0.17  # alto del robot (fracción del alto del mapa)
 T_REPARAR = 5.0  # segundos que hay que mantener presionada la E
 
+# Objetos que hay que recoger para reparar el robot: (id, archivo en /images, nombre, color si falta el PNG)
+OBJETOS = [
+    ("antena", "ANTENA.png", "Antena", (230, 200, 60, 255)),
+    ("placa", "PLACA.png", "Placa", (60, 200, 120, 255)),
+    ("bateria", "BATERIA.png", "Batería", (80, 160, 255, 255)),
+]
+ITEM_ALTO = 0.06  # alto de cada objeto (fracción del alto del mapa)
+
+# Final de la misión
+ASTRO_WIN = "astroWIN.png"
+N_PARPADEOS = 5  # veces que alterna entre el sprite normal y astroWIN
+T_PARPADEO = 0.25  # segundos por cada cambio de sprite
+T_CELEBRAR = N_PARPADEOS * 2 * T_PARPADEO
+T_SUBIR = 1.2  # segundos que tarda en subir a la nave
+T_REGRESO = 6.0  # segundos del vuelo de regreso a la Tierra
+TIERRA_X, TIERRA_Y = 0.63, 0.095  # dónde está la Tierra en el mapa lunar (fracción)
+BONIFICACION = 100  # millones de $
+
 viaje_t0 = 0
 luna_t0 = 0
 luna_map = None
@@ -77,6 +96,15 @@ robot_zona = pygame.Rect(0, 0, 1, 1)
 robot_reparado = False
 reparar_t0 = None
 reparado_t = 0
+COHETES_HORIZ_LL = None  # cohetes acostados CON llama (solo para el vuelo de regreso)
+luna_cohete_llama = None
+luna_items = []
+nave_rect = pygame.Rect(0, 0, 1, 1)
+nave_zona = pygame.Rect(0, 0, 1, 1)
+astro_win = None
+fin_t0 = 0
+luna_activa = False  # hay una misión lunar en curso (se guarda para "Continuar")
+ultima_mision = "-"
 negro = pygame.Surface((SCREEN_W, SCREEN_H))
 negro.fill((0, 0, 0))
 ESTRELLAS = [(random.random(), random.random(), random.uniform(0.03, 0.12), random.choice([1, 2, 2, 3]))
@@ -217,7 +245,7 @@ def nave_default():
     return {c[1]: 0 for c in CATEGORIAS}
 
 
-game = {"mision": None, "nave": nave_default()}
+game = {"mision": None, "nave": nave_default(), "dinero": 0}
 player_start = (600, 450)
 
 GLOSARIO_TEXTO = [
@@ -324,7 +352,11 @@ def guardar(solo_opciones=False):
         except (OSError, ValueError):
             pass
     else:
-        data["partida"] = {"x": player.x, "y": player.y, "mision": game["mision"], "nave": game["nave"]}
+        en_estacion = not luna_activa
+        data["partida"] = {"x": player.x if en_estacion else player_start[0],
+                           "y": player.y if en_estacion else player_start[1],
+                           "mision": game["mision"], "nave": game["nave"],
+                           "dinero": game["dinero"], "luna": luna_guardado()}
     try:
         with open(SAVE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -515,8 +547,9 @@ def draw_world():
 
     mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "ninguna"
     nombre_cohete = LANZADORES[game["nave"]["lanz"]]["nombre"]
-    info = font.render(f"Misión: {mision}   |   Cohete: {nombre_cohete}   |   H: Glosario   |   ESC: Menú", True,
-                       (255, 255, 255))
+    info = font.render(
+        f"Misión: {mision}   |   Cohete: {nombre_cohete}   |   Fondos: ${game['dinero']}M   |   H: Glosario   |   ESC: Menú",
+        True, (255, 255, 255))
     pygame.draw.rect(screen, (0, 0, 0), (10, 10, info.get_width() + 20, 32), border_radius=4)
     screen.blit(info, (20, 17))
 
@@ -757,21 +790,28 @@ def draw_glosario():
 #  ACCIONES
 # ======================================================================
 def iniciar(continuar):
-    global estado
+    global estado, luna_activa
     keys_down.clear()
-    game["mision"], game["nave"] = None, nave_default()
+    luna_activa = False
+    game["mision"], game["nave"], game["dinero"] = None, nave_default(), 0
     player.x, player.y = player_start
+    luna_guardada = None
     if continuar:
         try:
             with open(SAVE_FILE, "r", encoding="utf-8") as f:
                 p = json.load(f)["partida"]
             player.x, player.y = p["x"], p["y"]
             game["mision"] = p["mision"]
+            game["dinero"] = int(p.get("dinero", 0))
+            luna_guardada = p.get("luna")
             for _, clave, lista in CATEGORIAS:
                 v = int(p["nave"].get(clave, 0))
                 game["nave"][clave] = max(0, min(v, len(lista) - 1))
         except (OSError, ValueError, KeyError, TypeError):
             pass
+    # Si había una misión lunar en curso, se continúa ahí (no se puede volver a la estación sin completarla)
+    if luna_guardada and game["mision"] is not None and iniciar_luna(luna_guardada):
+        return
     estado = ESTACION
 
 
@@ -964,32 +1004,73 @@ def sin_llama(img):
     return img.subsurface((0, 0, w, y + 1)).copy()
 
 
+def cargar_imagen(nombre, color):
+    """Carga un PNG de /images recortado a su contenido. Si no existe, devuelve un cuadro de color."""
+    try:
+        img = pygame.image.load(os.path.join(BASE_DIR, "images", nombre)).convert_alpha()
+        caja = img.get_bounding_rect()
+        if caja.width > 0 and caja.height > 0:
+            img = img.subsurface(caja).copy()
+        return img
+    except (pygame.error, FileNotFoundError, OSError):
+        print("No se encontró", nombre, "en la carpeta images")
+        img = pygame.Surface((80, 120), pygame.SRCALPHA)
+        img.fill(color)
+        return img
+
+
 def cargar_robots(alto_px):
     """Devuelve (robot roto, robot reparado) escalados con el mismo factor."""
-
-    def cargar(nombre, color):
-        try:
-            img = pygame.image.load(os.path.join(BASE_DIR, "images", nombre)).convert_alpha()
-            caja = img.get_bounding_rect()
-            if caja.width > 0 and caja.height > 0:
-                img = img.subsurface(caja).copy()
-            return img
-        except (pygame.error, FileNotFoundError, OSError):
-            print("No se encontró", nombre, "en la carpeta images")
-            img = pygame.Surface((80, 120), pygame.SRCALPHA)
-            img.fill(color)
-            return img
-
-    roto = cargar(ROBOT_ROTO, (200, 80, 80, 255))
-    ok = cargar(ROBOT_REPARADO, (80, 200, 120, 255))
+    roto = cargar_imagen(ROBOT_ROTO, (200, 80, 80, 255))
+    ok = cargar_imagen(ROBOT_REPARADO, (80, 200, 120, 255))
     factor = alto_px / roto.get_height()
     return escalar(roto, factor), escalar(ok, factor)
 
 
-def cargar_luna():
-    """Carga el mapa lunar, el cohete, el robot y coloca al jugador. False si no hay mapa."""
-    global luna_map, luna_cohete, luna_cohete_pos, COHETES_HORIZ
+def cargar_astro_win(size):
+    """astroWIN.png ajustado al tamaño del sprite normal del astronauta (None si no existe)."""
+    try:
+        img = pygame.image.load(os.path.join(BASE_DIR, "images", ASTRO_WIN)).convert_alpha()
+    except (pygame.error, FileNotFoundError, OSError):
+        print("No se encontró", ASTRO_WIN, "en la carpeta images")
+        return None
+    ancho, alto = size
+    img = escalar(img, min(ancho / img.get_width(), alto / img.get_height()))
+    surf = pygame.Surface(size, pygame.SRCALPHA)
+    surf.blit(img, img.get_rect(midbottom=(ancho // 2, alto)))
+    return surf
+
+
+def generar_items(w, h, evitar, guardado=None):
+    """Crea los 3 objetos en posiciones aleatorias del suelo (o en las posiciones guardadas)."""
+    pos = {d["id"]: d for d in (guardado or [])}
+    ocupados = list(evitar)
+    items = []
+    for oid, archivo, nombre, color in OBJETOS:
+        img = cargar_imagen(archivo, color)
+        img = escalar(img, int(h * ITEM_ALTO) / img.get_height())
+        iw, ih = img.get_size()
+        r = pygame.Rect(0, 0, iw, ih)
+        d = pos.get(oid)
+        if d:
+            r.topleft = (d["x"], d["y"])
+        else:
+            # Zona de aparición: el suelo del mapa (ajustable cuando se definan las colisiones finales)
+            for _ in range(600):
+                r.topleft = (random.randint(int(w * 0.06), int(w * 0.94) - iw),
+                             random.randint(int(h * 0.60), int(h * 0.93) - ih))
+                if not any(r.inflate(80, 80).colliderect(o) for o in ocupados):
+                    break
+        ocupados.append(r.inflate(300, 200))  # separa los objetos entre sí
+        items.append({"id": oid, "nombre": nombre, "img": img, "rect": r, "ok": bool(d and d.get("ok"))})
+    return items
+
+
+def cargar_luna(restaurar=None):
+    """Carga mapa, cohete, robot, objetos y personaje. 'restaurar' = datos guardados de una misión en curso."""
+    global luna_map, luna_cohete, luna_cohete_llama, luna_cohete_pos, COHETES_HORIZ, COHETES_HORIZ_LL
     global robot_roto, robot_ok, robot_rect, robot_zona, robot_reparado, reparar_t0, reparado_t
+    global luna_items, nave_rect, nave_zona, astro_win
     n = game["nave"]
     archivo = DESTINO_FONDO.get(n["orbita"])
     if archivo is None:
@@ -1008,67 +1089,151 @@ def cargar_luna():
     robot_zona = robot_rect.inflate(220, 180)
     robot_reparado, reparar_t0, reparado_t = False, None, 0
 
+    g = max(4, w // 100)
+    # COLISIONES PROVISIONALES: bordes, cielo/montañas (el suelo empieza ~54% de la altura) y el robot
+    luna_solidos = [
+        (0, 0, w, g), (0, h - g, w, g), (0, 0, g, h), (w - g, 0, g, h),
+        (0, 0, w, int(h * 0.54)),
+        (robot_rect.x, robot_rect.bottom - int(rrh * 0.4), rrw, int(rrh * 0.4)),
+    ]
     try:
-        g = max(4, w // 100)
-        # COLISIONES PROVISIONALES: bordes, cielo/montañas (el suelo empieza ~54% de la altura) y el robot
-        luna_solidos = [
-            (0, 0, w, g), (0, h - g, w, g), (0, 0, g, h), (w - g, 0, g, h),
-            (0, 0, w, int(h * 0.54)),
-            (robot_rect.x, robot_rect.bottom - int(rrh * 0.4), rrw, int(rrh * 0.4)),
-        ]
         luna_map = ImageMap(ruta, luna_solidos)
     except (pygame.error, FileNotFoundError, OSError) as e:
         print("No se pudo cargar el mapa lunar:", e)
         return False
 
-    # Cohetes sin llama y acostados (nariz hacia la derecha), una sola vez
+    # Cohetes acostados (nariz a la derecha): sin llama para estar parado, con llama para el regreso
     if COHETES_HORIZ is None:
         COHETES_HORIZ = [pygame.transform.rotate(sin_llama(i), -90) for i in COHETES_IMG]
+        COHETES_HORIZ_LL = [pygame.transform.rotate(i, -90) for i in COHETES_IMG]
     mw = max(i.get_width() for i in COHETES_HORIZ)
     mh = max(i.get_height() for i in COHETES_HORIZ)
     factor = min(LUNA_LARGO * w / mw, LUNA_GROSOR * h / mh)
     luna_cohete = escalar(COHETES_HORIZ[n["lanz"]], factor)
+    luna_cohete_llama = escalar(COHETES_HORIZ_LL[n["lanz"]], factor)
     rw, rh = luna_cohete.get_size()
     cx, cy = int(w * LUNA_CX), int(h * LUNA_CY)
     luna_cohete_pos = (cx - rw // 2, cy - rh // 2)
+    nave_rect = pygame.Rect(luna_cohete_pos, (rw, rh))
+    nave_zona = nave_rect.inflate(160, 160)
 
     # El personaje aparece enfrente (a la derecha) de la nariz del cohete
+    pw, ph = player.image.get_size()
     player.x = cx + rw // 2 + 45
-    player.y = cy - player.image.get_height() // 2 + 30
+    player.y = cy - ph // 2 + 30
+    spawn = pygame.Rect(int(player.x), int(player.y), pw, ph)
+    astro_win = cargar_astro_win((pw, ph))
+
+    # Objetos aleatorios (evitando colisiones, cohete, robot y el punto de aparición)
+    evitar = [pygame.Rect(*sol) for sol in luna_solidos] + [nave_zona, robot_zona, spawn.inflate(160, 160)]
+    luna_items = generar_items(w, h, evitar, restaurar.get("items") if restaurar else None)
+
+    if restaurar:
+        robot_reparado = bool(restaurar.get("reparado"))
+        player.x = restaurar.get("px", player.x)
+        player.y = restaurar.get("py", player.y)
     return True
 
 
-def iniciar_luna():
-    global estado, luna_t0, luna_fase
-    if not cargar_luna():
+def iniciar_luna(restaurar=None):
+    global estado, luna_t0, luna_fase, luna_activa
+    if not cargar_luna(restaurar):
         return False
     keys_down.clear()
-    luna_t0 = pygame.time.get_ticks()
-    luna_fase = "bajando"
+    luna_activa = True
+    if restaurar:
+        luna_fase = "listo"  # el cohete ya está estacionado: sin animación de llegada
+        luna_t0 = pygame.time.get_ticks() - int((LUNA_DEMORA + LUNA_LLEGADA + 2) * 1000)
+    else:
+        luna_fase = "bajando"
+        luna_t0 = pygame.time.get_ticks()
     estado = LUNA
     return True
 
 
+def luna_guardado():
+    """Datos de la misión lunar en curso para guardarlos (None si no hay)."""
+    if not luna_activa:
+        return None
+    return {"items": [{"id": it["id"], "x": it["rect"].x, "y": it["rect"].y, "ok": it["ok"]} for it in luna_items],
+            "reparado": robot_reparado, "px": player.x, "py": player.y}
+
+
+def salir_luna_al_menu():
+    """ESC en la misión: guarda el avance y va al menú principal (no se vuelve a la estación)."""
+    global estado
+    guardar()
+    keys_down.clear()
+    estado = MENU
+
+
+def interactuar_luna():
+    """Tecla E (pulsación): recoger un objeto cercano o subir a la nave si el robot ya está reparado."""
+    if luna_fase != "listo":
+        return
+    prect = player.rect()
+    for it in luna_items:
+        if not it["ok"] and prect.colliderect(it["rect"].inflate(90, 90)):
+            it["ok"] = True
+            return
+    if robot_reparado and prect.colliderect(nave_zona):
+        iniciar_regreso()
+
+
+def iniciar_regreso():
+    global luna_fase, fin_t0, reparar_t0
+    keys_down.clear()
+    reparar_t0 = None
+    luna_fase = "celebrando"
+    fin_t0 = pygame.time.get_ticks()
+
+
+def completar_mision():
+    """Termina la misión: bonificación, limpia la misión y muestra el menú MISIÓN EXITOSA."""
+    global estado, luna_activa, ultima_mision
+    ultima_mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "-"
+    game["dinero"] += BONIFICACION
+    game["mision"] = None
+    luna_activa = False
+    player.x, player.y = player_start
+    keys_down.clear()
+    guardar()
+    estado = MISION_OK
+
+
 def update_luna():
-    global luna_fase, reparar_t0, robot_reparado, reparado_t
+    global luna_fase, reparar_t0, robot_reparado, reparado_t, fin_t0
     ahora = pygame.time.get_ticks()
     t = (ahora - luna_t0) / 1000.0
     if luna_fase == "bajando":
         if t >= LUNA_DEMORA + LUNA_LLEGADA:
             luna_fase = "listo"
         return
-    cerca_robot = player.rect().colliderect(robot_zona)
-    if cerca_robot and pygame.K_e in keys_down and not robot_reparado:
-        # Manteniendo E junto al robot: el astronauta se queda quieto mientras repara
-        if reparar_t0 is None:
-            reparar_t0 = ahora
-        if (ahora - reparar_t0) / 1000.0 >= T_REPARAR:
-            robot_reparado = True
-            reparado_t = ahora
+
+    if luna_fase == "listo":
+        cerca_robot = player.rect().colliderect(robot_zona)
+        todos = all(it["ok"] for it in luna_items)
+        if cerca_robot and todos and pygame.K_e in keys_down and not robot_reparado:
+            # Manteniendo E junto al robot: el astronauta se queda quieto mientras repara
+            if reparar_t0 is None:
+                reparar_t0 = ahora
+            if (ahora - reparar_t0) / 1000.0 >= T_REPARAR:
+                robot_reparado = True
+                reparado_t = ahora
+                reparar_t0 = None
+        else:
             reparar_t0 = None
-    else:
-        reparar_t0 = None
-        player.update(luna_map)
+            player.update(luna_map)
+        return
+
+    # Secuencia final: celebrar -> subir a la nave -> volar a la Tierra
+    tf = (ahora - fin_t0) / 1000.0
+    if luna_fase == "celebrando" and tf >= T_CELEBRAR:
+        luna_fase, fin_t0 = "subiendo", ahora
+    elif luna_fase == "subiendo" and tf >= T_SUBIR:
+        luna_fase, fin_t0 = "regreso", ahora
+    elif luna_fase == "regreso" and tf >= T_REGRESO:
+        completar_mision()
 
 
 def caja_texto(msg, color, midbottom=None, midtop=None):
@@ -1081,6 +1246,24 @@ def caja_texto(msg, color, midbottom=None, midtop=None):
     pygame.draw.rect(screen, (0, 0, 0), box, border_radius=8)
     pygame.draw.rect(screen, color, box, 2, border_radius=8)
     screen.blit(img, img.get_rect(center=box.center))
+
+
+def hud_objetivo():
+    """Mensaje arriba a la derecha: cuántos objetos llevas, o REGRESO A CASA."""
+    if robot_reparado:
+        lineas = [("REGRESO A CASA", (90, 230, 120))]
+    else:
+        n_ok = sum(1 for it in luna_items if it["ok"])
+        lineas = [(f"Objetos para reparar: {n_ok}/{len(luna_items)}", (255, 255, 0))]
+        for it in luna_items:
+            lineas.append((("[OK] " if it["ok"] else "[  ] ") + it["nombre"],
+                           (90, 230, 120) if it["ok"] else (200, 200, 200)))
+    ancho = max(font.size(l)[0] for l, _ in lineas) + 28
+    caja = pygame.Rect(SCREEN_W - ancho - 10, 10, ancho, 12 + 24 * len(lineas))
+    pygame.draw.rect(screen, (0, 0, 0), caja, border_radius=6)
+    pygame.draw.rect(screen, lineas[0][1], caja, 2, border_radius=6)
+    for i, (l, c) in enumerate(lineas):
+        screen.blit(font.render(l, True, c), (caja.x + 14, caja.y + 8 + i * 24))
 
 
 def draw_luna():
@@ -1099,30 +1282,75 @@ def draw_luna():
     luna_view.fill((0, 0, 0))
     luna_map.draw(luna_view, camera)
 
-    # Cohete: llega volando horizontalmente desde la izquierda (la cola, sin llama, entra primero)
+    # ---- Cohete ----
     rx_final, ry = luna_cohete_pos
-    rw = luna_cohete.get_width()
-    if luna_fase == "bajando":
-        p = max(0.0, min(1.0, (t - LUNA_DEMORA) / LUNA_LLEGADA))
-        e = 1 - (1 - p) ** 3
-        rx_ini = cam_x - rw - 30
-        rx = int(rx_ini + (rx_final - rx_ini) * e)
+    rw, rh = luna_cohete.get_size()
+    if luna_fase == "regreso":
+        # Vuelo de regreso: despega con llama hacia la Tierra, achicándose
+        tt = (ahora - fin_t0) / 1000.0
+        e = min(1.0, tt / T_REGRESO) ** 2
+        sx, sy = nave_rect.center
+        tx, ty = luna_map.width * TIERRA_X, luna_map.height * TIERRA_Y
+        bx, by = sx + (tx - sx) * e, sy + (ty - sy) * e
+        ang = math.degrees(math.atan2(sy - ty, tx - sx))
+        esc = 1.0 - 0.9 * e
+        d = (luna_cohete_llama.get_width() - rw) / 2 * esc
+        img = pygame.transform.rotozoom(luna_cohete_llama, ang, esc)
+        cxp = bx - d * math.cos(math.radians(ang)) - cam_x
+        cyp = by + d * math.sin(math.radians(ang)) - cam_y
+        luna_view.blit(img, img.get_rect(center=(int(cxp), int(cyp))))
     else:
-        rx = rx_final
-    luna_view.blit(luna_cohete, (rx - cam_x, ry - cam_y))
+        if luna_fase == "bajando":
+            p = max(0.0, min(1.0, (t - LUNA_DEMORA) / LUNA_LLEGADA))
+            e = 1 - (1 - p) ** 3
+            rx_ini = cam_x - rw - 30
+            rx = int(rx_ini + (rx_final - rx_ini) * e)
+        else:
+            rx = rx_final
+        luna_view.blit(luna_cohete, (rx - cam_x, ry - cam_y))
 
-    # Robot (roto o reparado) y personaje, ordenados por profundidad
+    # ---- Objetos, robot y personaje ----
     robot_img = robot_ok if robot_reparado else robot_roto
     rr = robot_img.get_rect(midbottom=robot_rect.midbottom)
 
     def pintar_robot():
         luna_view.blit(robot_img, (rr.x - cam_x, rr.y - cam_y))
 
-    def pintar_player():
-        for s in sprites:
-            s.draw(luna_view, camera)
+    def pintar_items():
+        prect = player.rect()
+        for it in luna_items:
+            if it["ok"]:
+                continue
+            r = it["rect"]
+            luna_view.blit(it["img"], (r.x - cam_x, r.y - cam_y))
+            if luna_fase == "listo" and prect.colliderect(r.inflate(90, 90)):
+                pygame.draw.rect(luna_view, (255, 255, 0), r.move(-cam_x, -cam_y).inflate(8, 8), 2)
 
-    if luna_fase == "listo":
+    def pintar_player():
+        if luna_fase == "celebrando":
+            tt = (ahora - fin_t0) / 1000.0
+            usar_win = astro_win is not None and int(tt / T_PARPADEO) % 2 == 1
+            luna_view.blit(astro_win if usar_win else player.image,
+                           (int(player.x) - cam_x, int(player.y) - cam_y))
+        elif luna_fase == "subiendo":
+            p = min(1.0, (ahora - fin_t0) / 1000.0 / T_SUBIR)
+            tx = nave_rect.centerx - player.image.get_width() // 2
+            ty = nave_rect.centery - player.image.get_height() // 2
+            img = player.image.copy()
+            img.set_alpha(int(255 * (1 - p)))
+            luna_view.blit(img, (int(player.x + (tx - player.x) * p) - cam_x,
+                                 int(player.y + (ty - player.y) * p) - cam_y))
+        else:
+            for s in sprites:
+                s.draw(luna_view, camera)
+
+    if luna_fase == "bajando":
+        pintar_robot()
+    elif luna_fase == "regreso":
+        pintar_items()
+        pintar_robot()
+    else:
+        pintar_items()
         if player.y + player.image.get_height() < robot_rect.bottom:
             pintar_player()
             pintar_robot()
@@ -1131,45 +1359,75 @@ def draw_luna():
             pintar_player()
         if pygame.K_F1 in keys_down:
             luna_map.draw_debug(luna_view, camera)
-    else:
-        pintar_robot()
 
     screen.blit(pygame.transform.smoothscale(luna_view, (SCREEN_W, SCREEN_H)), (0, 0))
 
-    # HUD
-    n = game["nave"]
+    # ---- HUD ----
     mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "-"
     extra = "Llegando a la Luna..." if luna_fase == "bajando" else "WASD: caminar   E: interactuar"
-    info = font.render(
-        f"Misión: {mision}   |   Destino: {ORBITAS[n['orbita']]['nombre']}   |   {extra}   |   ESC: volver",
-        True, (255, 255, 255))
+    info = font.render(f"Misión: {mision}   |   {extra}   |   ESC: menú", True, (255, 255, 255))
     pygame.draw.rect(screen, (0, 0, 0), (10, 10, info.get_width() + 20, 32), border_radius=4)
     screen.blit(info, (20, 17))
+    if luna_fase != "bajando":
+        hud_objetivo()
 
-    # Interacción con el robot
+    # ---- Avisos de interacción ----
     if luna_fase == "listo":
-        if reparar_t0 is not None:
+        prect = player.rect()
+        todos = all(it["ok"] for it in luna_items)
+        n_ok = sum(1 for it in luna_items if it["ok"])
+        base = (SCREEN_W // 2, SCREEN_H - 40)
+        item_cerca = next((it for it in luna_items
+                           if not it["ok"] and prect.colliderect(it["rect"].inflate(90, 90))), None)
+        if item_cerca:
+            caja_texto(f"[E]  Recoger {item_cerca['nombre']}", (255, 255, 0), midbottom=base)
+        elif reparar_t0 is not None:
             prog = min(1.0, (ahora - reparar_t0) / 1000.0 / T_REPARAR)
             bw = 360
             box = pygame.Rect(0, 0, bw + 40, 74)
-            box.midbottom = (SCREEN_W // 2, SCREEN_H - 40)
+            box.midbottom = base
             pygame.draw.rect(screen, (0, 0, 0), box, border_radius=8)
             pygame.draw.rect(screen, (255, 255, 0), box, 2, border_radius=8)
             img = font.render(f"Reparando robot...  {int(prog * 100)}%", True, (255, 255, 0))
             screen.blit(img, img.get_rect(midtop=(box.centerx, box.y + 10)))
             pygame.draw.rect(screen, (40, 45, 70), (box.x + 20, box.y + 44, bw, 16), border_radius=6)
             pygame.draw.rect(screen, (90, 230, 120), (box.x + 20, box.y + 44, int(bw * prog), 16), border_radius=6)
-        elif not robot_reparado and player.rect().colliderect(robot_zona):
-            caja_texto(f"Mantén [E] {T_REPARAR:g} segundos para reparar el robot", (255, 255, 0),
-                       midbottom=(SCREEN_W // 2, SCREEN_H - 40))
+        elif not robot_reparado and prect.colliderect(robot_zona):
+            if todos:
+                caja_texto(f"Mantén [E] {T_REPARAR:g} segundos para reparar el robot", (255, 255, 0), midbottom=base)
+            else:
+                caja_texto(f"Te faltan objetos para repararlo ({n_ok}/{len(luna_items)})", (255, 170, 90),
+                           midbottom=base)
+        elif robot_reparado and prect.colliderect(nave_zona):
+            caja_texto("[E]  Volver a la Tierra", (90, 230, 120), midbottom=base)
         if robot_reparado and ahora - reparado_t < 4000:
-            caja_texto("¡Robot reparado!", (90, 230, 120), midtop=(SCREEN_W // 2, 60))
+            caja_texto("¡Robot reparado! Regresa a la nave", (90, 230, 120), midtop=(SCREEN_W // 2, 60))
 
-    # entrada desde negro
+    # ---- Fundidos: entrada desde negro / salida hacia la Tierra ----
     alpha = max(0, 255 - int(255 * t / 1.0))
+    if luna_fase == "regreso":
+        resto = T_REGRESO - (ahora - fin_t0) / 1000.0
+        if resto < 1.0:
+            alpha = int(255 * (1 - max(0.0, resto)))
     if alpha > 0:
         negro.set_alpha(alpha)
         screen.blit(negro, (0, 0))
+
+
+def draw_mision_ok():
+    t = pygame.time.get_ticks() / 1000.0
+    screen.fill((5, 5, 15))
+    for x0, y0, vel, tam in ESTRELLAS:
+        x = int(((x0 - t * vel) % 1.0) * SCREEN_W)
+        pygame.draw.rect(screen, (200, 200, 255), (x, int(y0 * SCREEN_H), tam, tam))
+    ventana("RESULTADO DE LA MISIÓN", (100, 70, 600, 460))
+    txt("MISIÓN EXITOSA", font_big, (90, 230, 120), (UI_W // 2, 160), center=True)
+    txt(ultima_mision, font_title, (255, 255, 255), (UI_W // 2, 220), center=True)
+    txt("Repetidor lunar reparado. ¡Regresaste a la Tierra!", font, (200, 220, 255), (UI_W // 2, 255), center=True)
+    txt("BONIFICACIÓN ECONÓMICA", font, (255, 255, 0), (UI_W // 2, 315), center=True)
+    txt(f"+${BONIFICACION}M", font_big, (255, 255, 0), (UI_W // 2, 360), center=True)
+    txt(f"Fondos totales: ${game['dinero']}M", font_title, (255, 255, 255), (UI_W // 2, 420), center=True)
+    button((300, 458, 200, 50), "Volver a la estación", "cerrar")
 
 
 # ======================================================================
@@ -1202,7 +1460,9 @@ while running:
                     saltar_viaje()
             elif estado == LUNA:
                 if event.key == pygame.K_ESCAPE:
-                    regresar_estacion()
+                    salir_luna_al_menu()
+                elif event.key == pygame.K_e:
+                    interactuar_luna()
             elif event.key == pygame.K_ESCAPE:
                 if estado == MENU:
                     running = False
@@ -1259,6 +1519,8 @@ while running:
     elif estado == LUNA:
         update_luna()
         draw_luna()
+    elif estado == MISION_OK:
+        draw_mision_ok()
     else:
         draw_world()
         if estado in (PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO):

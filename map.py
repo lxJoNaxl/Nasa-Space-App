@@ -1,4 +1,15 @@
+import sys
+import os
 import pygame
+
+def ruta_recurso(ruta_relativa):
+    """Obtiene la ruta correcta si está empaquetado o no."""
+    try:
+        # PyInstaller crea una carpeta temporal en _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, ruta_relativa)
 
 class TileKind:
     def __init__(self, name, image, is_solid):

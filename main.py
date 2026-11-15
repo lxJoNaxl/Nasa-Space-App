@@ -13,6 +13,23 @@ from despegue import Despegue
 from dron import DronMarte
 from final import FinalEpico
 import sonido
+import sys
+
+# ----------------------------------------------------------------------
+#  RUTAS: funcionan igual con "python main.py" que dentro del .exe (PyInstaller)
+#  RECURSOS = donde están images/, sonidos/, Fondo/...  |  la partida se guarda en SAVE_FILE
+# ----------------------------------------------------------------------
+if getattr(sys, "frozen", False):
+    RECURSOS = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    CARPETA_GUARDADO = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "SimuladorEspacial")
+    try:
+        os.makedirs(CARPETA_GUARDADO, exist_ok=True)
+    except OSError:
+        CARPETA_GUARDADO = os.path.dirname(sys.executable)
+else:
+    RECURSOS = os.path.dirname(os.path.abspath(__file__))
+    CARPETA_GUARDADO = RECURSOS
+os.chdir(RECURSOS)  # así también funcionan las rutas relativas (p. ej. el video del menú)
 
 # ======================================================================
 #  INICIALIZACIÓN
@@ -35,7 +52,7 @@ font_star = pygame.font.SysFont(None, 26)
 font_xs = pygame.font.SysFont(None, 17)
 
 BG = (15, 15, 30)
-SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partida.json")
+SAVE_FILE = os.path.join(CARPETA_GUARDADO, "partida.json")
 menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
@@ -500,10 +517,10 @@ SOLIDOS = [
     (0, 850, 530, 32), (670, 850, 480, 32), (1210, 0, 1190, 135), (1488, 200, 720, 445), (2248, 150, 90, 500),
     (1225, 215, 90, 360), (1255, 725, 295, 110), (2020, 725, 290, 115), (1210, 868, 540, 14), (1852, 868, 525, 14),
 ]
-station_map = ImageMap("images/mapa_completo.png", SOLIDOS)
-player = Player("images/ASTRONAUTA.png", *player_start)
+station_map = ImageMap(os.path.join(RECURSOS, "images", "mapa_completo.png"), SOLIDOS)
+player = Player(os.path.join(RECURSOS, "images", "ASTRONAUTA.png"), *player_start)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = RECURSOS
 
 
 def ruta_imagen(nombre):

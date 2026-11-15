@@ -1,2 +1,5 @@
 pygame
 opencv-python
+
+# Solo para crear el .exe (crear_exe.bat lo instala solo):
+# pyinstaller

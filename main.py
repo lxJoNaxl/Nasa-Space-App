@@ -12,6 +12,7 @@ from map import ImageMap
 from despegue import Despegue
 from dron import DronMarte
 from final import FinalEpico
+import sonido
 
 # ======================================================================
 #  INICIALIZACIÓN
@@ -889,6 +890,7 @@ def comprar(clave, idx):
         return
     game["dinero"] -= c["costo"]
     game["inventario"][clave].add(idx)
+    sonido.tocar(sonido.COMPRA)
     toast(f"Compraste «{c['nombre']}». Ya puedes usarla en el HANGAR.", (90, 230, 120))
     guardar()
 
@@ -2063,6 +2065,8 @@ def iniciar_luna(restaurar=None):
     keys_down.clear()
     player.reposo()
     luna_activa = True
+    if not restaurar:
+        sonido.tocar(sonido.APARICION)  # llegada a la Luna o a Marte
     if restaurar:
         luna_fase = "listo"  # el cohete ya está estacionado: sin animación de llegada
         luna_t0 = pygame.time.get_ticks() - int((LUNA_DEMORA + LUNA_LLEGADA + 2) * 1000)
@@ -2104,6 +2108,7 @@ def interactuar_luna():
     for it in luna_items:
         if not it["ok"] and prect.colliderect(it["rect"].inflate(90, 90)):
             it["ok"] = True
+            sonido.tocar(sonido.TOMA_ITEM)
             return
     if robot_reparado and prect.colliderect(nave_zona):
         iniciar_regreso()
@@ -2161,9 +2166,11 @@ def update_luna():
     ahora = pygame.time.get_ticks()
     t = (ahora - luna_t0) / 1000.0
 
-    # Fuera de la fase de caminar, el astronauta se ve en su sprite normal
+    # Fuera de la fase de caminar, el astronauta se ve en su sprite normal y no suenan pasos ni reparación
     if luna_fase != "listo":
         player.reposo()
+        sonido.pasos(False)
+        sonido.parar(sonido.REPARAR)
 
     if luna_fase == "bajando":
         if t >= LUNA_DEMORA + LUNA_LLEGADA:
@@ -2186,15 +2193,21 @@ def update_luna():
         if cerca_robot and todos and pygame.K_e in keys_down and not robot_reparado and not es_marte:
             # Manteniendo E junto al robot: el astronauta se queda quieto mientras repara
             player.reposo()
+            sonido.pasos(False)
+            sonido.loop(sonido.REPARAR)  # suena en bucle hasta que termina la reparación
             if reparar_t0 is None:
                 reparar_t0 = ahora
             if (ahora - reparar_t0) / 1000.0 >= T_REPARAR:
                 robot_reparado = True
                 reparado_t = ahora
                 reparar_t0 = None
+                sonido.parar(sonido.REPARAR)
         else:
             reparar_t0 = None
+            sonido.parar(sonido.REPARAR)  # soltaste la E antes de terminar
+            px, py = player.x, player.y
             player.update(luna_map)
+            sonido.pasos(player.x != px or player.y != py)
         return
 
     # Secuencia final: celebrar -> subir a la nave -> volar a la Tierra
@@ -2519,12 +2532,23 @@ while running:
                         on_click(ident)
                         break
 
-    # Fuera de la estación y la Luna el astronauta siempre se ve en su sprite normal
+    # Fuera de la estación y la Luna el astronauta siempre se ve en su sprite normal y no suenan pasos
     if estado not in (ESTACION, LUNA):
         player.reposo()
+        sonido.pasos(False)
+    if estado != LUNA:
+        sonido.parar(sonido.REPARAR)
 
     if estado == ESTACION:
+        px, py = player.x, player.y
         player.update(station_map)
+        sonido.pasos(player.x != px or player.y != py)  # pasos solo si de verdad se movió
+
+    # Música del menú: en bucle hasta salir o empezar a jugar
+    if estado in (MENU, OPCIONES):
+        sonido.loop(sonido.MENU)
+    else:
+        sonido.parar(sonido.MENU, 400)
 
     clickables.clear()
     ui.fill((0, 0, 0, 0))

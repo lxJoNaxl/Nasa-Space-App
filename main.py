@@ -1,12 +1,12 @@
 import json
 import os
 import pygame
+from Fondo.FondoMenu import FondoMenu 
 import player as player_mod
 from sprite import sprites
 from player import Player
 from input import keys_down
 from map import ImageMap
-
 # ======================================================================
 #  INICIALIZACIÓN
 # ======================================================================
@@ -28,6 +28,7 @@ font_big = pygame.font.SysFont(None, 64)
 
 BG = (15, 15, 30)
 SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partida.json")
+menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
 MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE = range(5)
@@ -380,6 +381,12 @@ def on_click(ident):
 # ======================================================================
 running = True
 while running:
+    if estado == MENU:
+        OFF_X = SCREEN_W - UI_W - 40
+    else:
+        OFF_X = (SCREEN_W - UI_W) // 2
+    OFF_Y = (SCREEN_H - UI_H) // 2
+
     mx, my = pygame.mouse.get_pos()
     mouse_ui = (mx - OFF_X, my - OFF_Y)
 
@@ -422,9 +429,12 @@ while running:
     clickables.clear()
     ui.fill((0, 0, 0, 0))
 
-    if estado in (MENU, OPCIONES):
+    if estado == MENU:
+        menu_bg.draw(screen)
+        draw_menu()
+    elif estado == OPCIONES:
         screen.fill(BG)
-        (draw_menu if estado == MENU else draw_opciones)()
+        draw_opciones()
     else:
         draw_world()
         if estado in (PANEL_MISION, PANEL_NAVE):
@@ -437,5 +447,6 @@ while running:
     pygame.display.flip()
     clock.tick(60)
 
+menu_bg.release()
 guardar(solo_opciones=True)
 pygame.quit()

@@ -18,12 +18,18 @@ def _recortar(img):
     return img
 
 
-def _cargar_variante(ruta, size):
-    """PNG recortado y ajustado al tamaño del sprite normal (None si no existe)."""
+def _leer_variante(ruta):
+    """PNG recortado tal como está en disco (None si no existe)."""
     try:
-        img = _recortar(pygame.image.load(ruta).convert_alpha())
+        return _recortar(pygame.image.load(ruta).convert_alpha())
     except (pygame.error, FileNotFoundError, OSError):
         print("No se encontró", ruta)
+        return None
+
+
+def _ajustar_variante(img, size):
+    """Ajusta el PNG recortado al tamaño del sprite normal (None si no hay imagen)."""
+    if img is None:
         return None
     ancho, alto = size
     w, h = img.get_size()
@@ -38,26 +44,50 @@ class Player(Sprite):
     def __init__(self, image, x, y):
         super().__init__(image, x, y)
 
-        # 1) Recortar el espacio transparente alrededor del dibujo
-        img = _recortar(self.image)
+        # 1) Recortar el espacio transparente alrededor del dibujo (se guarda para poder reescalar)
+        self._base = _recortar(self.image)
 
-        # 2) Escalar a la altura deseada SIN deformar (mantiene la proporción)
-        w, h = img.get_size()
-        nuevo_w = max(1, round(w * PLAYER_HEIGHT / h))
-        self.image_der = pygame.transform.smoothscale(img, (nuevo_w, PLAYER_HEIGHT))
-        self.image_izq = pygame.transform.flip(self.image_der, True, False)
-        self.image = self.image_der
-
-        # 3) Variantes con la mano alzada (mismo tamaño que el sprite normal,
-        #    se buscan en la misma carpeta que ASTRONAUTA.png)
+        # 2) Variantes con la mano alzada (se buscan en la misma carpeta que ASTRONAUTA.png)
         carpeta = os.path.dirname(image)
-        size = self.image_der.get_size()
-        self.mano_izq = _cargar_variante(os.path.join(carpeta, ARCHIVO_MANO_IZQ), size)
-        self.mano_der = _cargar_variante(os.path.join(carpeta, ARCHIVO_MANO_DER), size)
+        self._mano_izq_orig = _leer_variante(os.path.join(carpeta, ARCHIVO_MANO_IZQ))
+        self._mano_der_orig = _leer_variante(os.path.join(carpeta, ARCHIVO_MANO_DER))
 
         self.mirando = "der"
         self._caminando = False
         self._t_inicio_paso = 0
+        self.altura = PLAYER_HEIGHT
+        self._escalar(PLAYER_HEIGHT)
+        self.image = self.image_der
+
+    def _escalar(self, altura):
+        """Escala todos los sprites a 'altura' px SIN deformar (mantiene la proporción)."""
+        w, h = self._base.get_size()
+        nuevo_w = max(1, round(w * altura / h))
+        self.image_der = pygame.transform.smoothscale(self._base, (nuevo_w, altura))
+        self.image_izq = pygame.transform.flip(self.image_der, True, False)
+        size = self.image_der.get_size()
+        self.mano_izq = _ajustar_variante(self._mano_izq_orig, size)
+        self.mano_der = _ajustar_variante(self._mano_der_orig, size)
+        self.altura = altura
+
+    def set_altura(self, altura):
+        """Cambia el tamaño del astronauta. Los pies se quedan en el mismo punto del mapa."""
+        altura = max(20, int(altura))
+        if altura == self.altura:
+            return
+        w0, h0 = self.image.get_size()
+        self._escalar(altura)
+        self.reposo()
+        w1, h1 = self.image.get_size()
+        self.x += (w0 - w1) / 2
+        self.y += h0 - h1
+
+    def convertir_pos(self, x, y, altura_vieja):
+        """Pasa una posición guardada con otra altura de astronauta al tamaño actual (pies fijos)."""
+        w, h = self._base.get_size()
+        w0 = max(1, round(w * altura_vieja / h))
+        w1 = self.image_der.get_width()
+        return x + (w0 - w1) / 2, y + altura_vieja - self.image_der.get_height()
 
     def rect(self):
         w, h = self.image.get_size()

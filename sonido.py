@@ -20,9 +20,16 @@ PASOS = "pasos.wav"                # en bucle mientras el personaje camina
 TOMA_ITEM = "toma-items.wav"       # al recoger una pieza en la misión lunar
 MENU = "Menu.wav"                  # en bucle en el menú
 APARICION = "aparicion.wav"        # al llegar a la Luna o a Marte
+AMBIENTE = "ambiente.wav"          # en bucle SOLO en la base, la Luna y Marte
+DRON = "dron.wav"                  # una vez, al iniciar la expedición del dron en Marte
+OPCION = "opcion.wav"              # al pulsar botones del menú y de las ventanas
+ARRANQUE = "arranque.wav"          # al iniciar un despegue (seguido de DESPEGUE)
+DESPEGUE = "despegue.wav"
+FINAL = "Final.wav"                # en bucle desde la cinemática final hasta volver a la base
 
 # Volumen de cada sonido (0.0 a 1.0)
-VOLUMEN = {REPARAR: 0.8, COMPRA: 0.9, PASOS: 0.5, TOMA_ITEM: 0.9, MENU: 0.5, APARICION: 0.9}
+VOLUMEN = {REPARAR: 0.8, COMPRA: 0.9, PASOS: 0.5, TOMA_ITEM: 0.9, MENU: 0.5, APARICION: 0.9,
+           AMBIENTE: 0.35, DRON: 0.8, OPCION: 0.7, ARRANQUE: 0.9, DESPEGUE: 0.9, FINAL: 0.7}
 
 CARPETAS = ("sonidos", "Sonidos", "sounds", "audio", "")
 EXTENSIONES = (".wav", ".ogg", ".mp3")
@@ -120,3 +127,44 @@ def pasos(moviendo):
         loop(PASOS)
     else:
         parar(PASOS, 80)
+
+
+# ----------------------------------------------------------------------
+#  Despegue: ARRANQUE y, cuando termina, DESPEGUE (se puede cortar en cualquier momento)
+# ----------------------------------------------------------------------
+_despegue = {"activo": False, "t0": 0, "despegando": False}
+
+
+def detener(nombre, fade_ms=150):
+    """Corta un sonido (en bucle o no). Si no estaba sonando, no hace nada."""
+    _loops.pop(nombre, None)
+    snd = _cache.get(nombre)
+    if snd is not None:
+        snd.fadeout(fade_ms)
+
+
+def iniciar_despegue():
+    """Suena ARRANQUE y, al terminar, DESPEGUE."""
+    parar_despegue(0)
+    if not _mixer_listo():
+        return
+    _despegue.update(activo=True, t0=pygame.time.get_ticks(), despegando=False)
+    tocar(ARRANQUE)
+
+
+def parar_despegue(fade_ms=300):
+    """Corta ARRANQUE y DESPEGUE (por ejemplo al saltar la animación)."""
+    if _despegue["activo"]:
+        detener(ARRANQUE, fade_ms)
+        detener(DESPEGUE, fade_ms)
+    _despegue["activo"] = False
+
+
+def actualizar():
+    """Llamar una vez por frame: encadena DESPEGUE justo después de ARRANQUE."""
+    if _despegue["activo"] and not _despegue["despegando"]:
+        arr = cargar(ARRANQUE)
+        dur = arr.get_length() if arr else 0.0
+        if (pygame.time.get_ticks() - _despegue["t0"]) / 1000.0 >= dur:
+            _despegue["despegando"] = True
+            tocar(DESPEGUE)

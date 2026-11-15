@@ -43,6 +43,7 @@ menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
  PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA, MISION_OK, PANEL_TIENDA, PANEL_SIMULA, FINAL) = range(15)
 anim = None  # animación de despegue activa
 final = None  # cinemática final (al completar la última misión)
+final_sonando = False  # Final.wav suena en bucle desde la cinemática hasta volver a la base
 estado = MENU
 
 # ----------------------------------------------------------------------
@@ -279,7 +280,8 @@ MISIONES = [
      "desc": "Viaje interplanetario."},
 ]
 
-cfg = {"zoom_extra": 1.0, "velocidad": 3}
+ALTURA_MIN, ALTURA_MAX = 40, 140  # límites del tamaño del personaje (px) en Opciones
+cfg = {"zoom_extra": 1.0, "velocidad": 3, "altura_jugador": player_mod.PLAYER_HEIGHT}
 
 
 def nave_default():
@@ -442,6 +444,11 @@ def puntaje(r):
     return int(300 + r["ciencia"] * 4 + ahorro * 300 + max(0.0, 1 - r["masa"] / r["cap"]) * 200)
 
 
+def inicio_jugador():
+    """Punto de inicio del astronauta (con los pies en el mismo lugar sea cual sea su tamaño)."""
+    return player.convertir_pos(player_start[0], player_start[1], player_mod.PLAYER_HEIGHT)
+
+
 def hay_partida():
     try:
         with open(SAVE_FILE, "r", encoding="utf-8") as f:
@@ -460,8 +467,10 @@ def guardar(solo_opciones=False):
             pass
     else:
         en_estacion = not luna_activa
-        data["partida"] = {"x": player.x if en_estacion else player_start[0],
-                           "y": player.y if en_estacion else player_start[1],
+        ix, iy = inicio_jugador()
+        data["partida"] = {"x": player.x if en_estacion else ix,
+                           "y": player.y if en_estacion else iy,
+                           "altura_jugador": player.altura,
                            "mision": game["mision"], "nave": game["nave"],
                            "dinero": game["dinero"], "luna": luna_guardado(),
                            "inventario": {k: sorted(v) for k, v in game["inventario"].items()},
@@ -582,14 +591,18 @@ def apply_zoom():
 
 
 cargar_opciones()
+cfg["altura_jugador"] = max(ALTURA_MIN, min(ALTURA_MAX, int(cfg.get("altura_jugador", player_mod.PLAYER_HEIGHT))))
 apply_zoom()
 player_mod.movement_speed = cfg["velocidad"]
+player.set_altura(cfg["altura_jugador"])
 
 # ======================================================================
 #  INTERFAZ
 # ======================================================================
 clickables = []
 mouse_ui = (0, 0)
+SLIDER = pygame.Rect(440, 400, 220, 10)  # barra del tamaño del personaje (coordenadas de la interfaz)
+arrastrando_tamano = False
 aviso = ""
 sel_m = 0
 det_cat = "formato"  # categoría abierta en el hangar
@@ -666,7 +679,33 @@ def draw_opciones():
     button((470, 305, 40, 40), "-", "vel-")
     txt(str(cfg["velocidad"]), font, (255, 255, 0), (565, 325), center=True)
     button((620, 305, 40, 40), "+", "vel+")
-    button((250, 440, 300, 50), "Volver", "volver")
+    # Tamaño del personaje: vista previa + barra deslizante
+    txt("Tamaño del personaje", font, (255, 255, 255), (170, 395))
+    pygame.draw.rect(ui, (40, 45, 70), SLIDER, border_radius=4)
+    frac = (cfg["altura_jugador"] - ALTURA_MIN) / (ALTURA_MAX - ALTURA_MIN)
+    hx = SLIDER.x + int(SLIDER.w * frac)
+    pygame.draw.rect(ui, (0, 200, 255), (SLIDER.x, SLIDER.y, hx - SLIDER.x, SLIDER.h), border_radius=4)
+    hover = SLIDER.inflate(30, 34).collidepoint(mouse_ui) or arrastrando_tamano
+    pygame.draw.circle(ui, (255, 255, 0) if hover else (255, 255, 255), (hx, SLIDER.centery), 11)
+    pygame.draw.circle(ui, (0, 90, 200), (hx, SLIDER.centery), 11, 2)
+    txt(f"{cfg['altura_jugador']} px", font, (255, 255, 0), (SLIDER.right + 50, SLIDER.centery), center=True)
+    caja = pygame.Rect(30, 205, 120, 205)
+    pygame.draw.rect(ui, (14, 22, 55), caja, border_radius=8)
+    pygame.draw.rect(ui, (0, 200, 255), caja, 2, border_radius=8)
+    suelo_y = caja.bottom - 18
+    pygame.draw.line(ui, (90, 100, 140), (caja.x + 10, suelo_y), (caja.right - 10, suelo_y), 2)
+    ui.blit(player.image_der, player.image_der.get_rect(midbottom=(caja.centerx, suelo_y)))
+    txt("Vista previa", font_xs, (200, 220, 255), (caja.centerx, caja.y + 12), center=True)
+    button((250, 510, 300, 50), "Volver", "volver")
+
+
+def fijar_altura(x_ui):
+    """Mueve la barra de tamaño según la posición del mouse; el cambio se ve al instante."""
+    f = max(0.0, min(1.0, (x_ui - SLIDER.x) / SLIDER.w))
+    v = ALTURA_MIN + round(f * (ALTURA_MAX - ALTURA_MIN))
+    if v != cfg["altura_jugador"]:
+        cfg["altura_jugador"] = v
+        player.set_altura(v)
 
 
 def draw_dinero():
@@ -903,6 +942,7 @@ def vender(clave, idx):
     game["dinero"] += c["costo"]
     if game["nave"][clave] == idx:
         game["nave"][clave] = 0
+    sonido.tocar(sonido.COMPRA)
     toast(f"Vendiste «{c['nombre']}» y recuperaste ${c['costo']}M.", (255, 220, 120))
     guardar()
 
@@ -1651,13 +1691,14 @@ def iniciar(continuar):
     game["mision"], game["nave"], game["dinero"] = None, nave_default(), DINERO_INICIAL
     game["inventario"], game["completadas"] = inventario_inicial(), []
     game["jugador"] = ""
-    player.x, player.y = player_start
+    player.x, player.y = inicio_jugador()
     luna_guardada = None
     if continuar:
         try:
             with open(SAVE_FILE, "r", encoding="utf-8") as f:
                 p = json.load(f)["partida"]
-            player.x, player.y = p["x"], p["y"]
+            h0 = int(p.get("altura_jugador", player_mod.PLAYER_HEIGHT))  # altura con la que se guardó
+            player.x, player.y = player.convertir_pos(p["x"], p["y"], h0)
             game["jugador"] = str(p.get("jugador", ""))[:20]
             # Las partidas anteriores a la tienda no tienen inventario: empiezan con la economía nueva.
             if "inventario" in p:
@@ -1674,6 +1715,9 @@ def iniciar(continuar):
                 if isinstance(m, int) and 0 <= m < len(MISIONES) and mision_estado(m) == "disponible":
                     game["mision"] = m
                     luna_guardada = p.get("luna")
+                    if luna_guardada and "px" in luna_guardada and "py" in luna_guardada:
+                        luna_guardada["px"], luna_guardada["py"] = player.convertir_pos(
+                            luna_guardada["px"], luna_guardada["py"], h0)
         except (OSError, ValueError, KeyError, TypeError):
             pass
     # Si había una misión lunar en curso, se continúa ahí (no se puede volver a la estación sin completarla)
@@ -1783,6 +1827,7 @@ def iniciar_despegue():
                     falla=falla, perdida=perdida)
     keys_down.clear()
     estado = DESPEGUE
+    sonido.iniciar_despegue()  # arranque y, justo después, despegue (el cohete ya está en pantalla)
 
 
 def pulsar_despegue():
@@ -1790,8 +1835,10 @@ def pulsar_despegue():
     global anim
     if anim is not None and not anim.terminado:
         anim.saltar()
+        sonido.parar_despegue()  # al saltar la animación se cortan arranque y despegue
     elif anim is not None and anim.fallida:
         anim = None
+        sonido.parar_despegue()
         regresar_estacion()
         toast("El cohete falló en pleno vuelo. Revisa la lista de revisión antes de volver a despegar.", (255, 120, 90))
     else:
@@ -1824,13 +1871,14 @@ def sugerir_arreglo():
 def regresar_estacion():
     global estado
     keys_down.clear()
-    player.x, player.y = player_start
+    player.x, player.y = inicio_jugador()
     estado = ESTACION
 
 
 def iniciar_viaje():
     global estado, anim, viaje_t0
     anim = None
+    sonido.parar_despegue(500)
     keys_down.clear()
     viaje_t0 = pygame.time.get_ticks()
     estado = VIAJE
@@ -2090,6 +2138,8 @@ def salir_luna_al_menu():
     global estado
     guardar()
     keys_down.clear()
+    sonido.detener(sonido.DRON, 300)
+    sonido.parar_despegue(300)
     estado = MENU
 
 
@@ -2103,6 +2153,7 @@ def interactuar_luna():
         keys_down.clear()
         player.reposo()
         dron.iniciar()
+        sonido.tocar(sonido.DRON)  # una sola vez, al empezar la expedición
         luna_fase = "dron"
         return
     for it in luna_items:
@@ -2127,6 +2178,7 @@ def completar_mision():
     """Termina la misión: da la recompensa, la marca como completada, desbloquea la siguiente y muestra el resultado."""
     global estado, luna_activa, ultima_mision, ultimo_exito, ultima_recompensa, ultimo_desbloqueo
     global ultimo_reporte, ok_pagina
+    sonido.parar_despegue(500)  # termina el sonido del despegue de regreso
     idx = game["mision"]
     mis = MISIONES[idx] if idx is not None else None
     ultimo_reporte = construir_reporte(idx) if idx is not None else None
@@ -2143,7 +2195,7 @@ def completar_mision():
     game["dinero"] += ultima_recompensa
     game["mision"] = None
     luna_activa = False
-    player.x, player.y = player_start
+    player.x, player.y = inicio_jugador()
     keys_down.clear()
     guardar()
     if nueva and len(game["completadas"]) >= len(MISIONES):
@@ -2153,7 +2205,8 @@ def completar_mision():
 
 
 def iniciar_final():
-    global estado, final
+    global estado, final, final_sonando
+    final_sonando = True
     n = game["nave"]
     final = FinalEpico(screen, os.path.join(BASE_DIR, "images"), n["lanz"], LANZADORES[n["lanz"]]["nombre"],
                        ultima_mision, [m["nombre"] for m in MISIONES], game.get("jugador", ""))
@@ -2182,6 +2235,7 @@ def update_luna():
         player.reposo()
         dron.update()
         if dron.hecho:
+            sonido.detener(sonido.DRON, 200)  # por si sigue sonando al aterrizar
             robot_reparado = True  # aquí significa "objetivo cumplido"
             reparado_t = ahora
             luna_fase = "listo"
@@ -2214,6 +2268,7 @@ def update_luna():
     tf = (ahora - fin_t0) / 1000.0
     if luna_fase == "celebrando" and tf >= T_CELEBRAR:
         luna_fase, fin_t0 = "subiendo", ahora
+        sonido.iniciar_despegue()  # despegue de regreso: arranque y luego despegue
     elif luna_fase == "subiendo" and tf >= T_SUBIR:
         luna_fase, fin_t0 = "regreso", ahora
     elif luna_fase == "regreso" and tf >= T_REGRESO:
@@ -2520,7 +2575,10 @@ while running:
             keys_down.discard(event.key)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = (event.pos[0] - OFF_X, event.pos[1] - OFF_Y)
-            if estado == DESPEGUE:
+            if estado == OPCIONES and SLIDER.inflate(30, 34).collidepoint(pos):
+                arrastrando_tamano = True
+                fijar_altura(pos[0])
+            elif estado == DESPEGUE:
                 pulsar_despegue()
             elif estado == VIAJE:
                 saltar_viaje()
@@ -2529,8 +2587,19 @@ while running:
             else:
                 for rect, ident in list(clickables):
                     if rect.collidepoint(pos):
+                        # comprar y vender ya suenan con compra.wav; los demás botones con opcion.wav
+                        if not (isinstance(ident, tuple) and ident[0] in ("comprar", "vender")):
+                            sonido.tocar(sonido.OPCION)
                         on_click(ident)
                         break
+
+    # Barra de tamaño del personaje: sigue al mouse mientras está pulsado y guarda al soltar
+    if arrastrando_tamano:
+        if estado == OPCIONES and pygame.mouse.get_pressed()[0]:
+            fijar_altura(mouse_ui[0])
+        else:
+            arrastrando_tamano = False
+            guardar(solo_opciones=True)
 
     # Fuera de la estación y la Luna el astronauta siempre se ve en su sprite normal y no suenan pasos
     if estado not in (ESTACION, LUNA):
@@ -2549,6 +2618,23 @@ while running:
         sonido.loop(sonido.MENU)
     else:
         sonido.parar(sonido.MENU, 400)
+
+    # Sonido de ambiente: SOLO en la base (con sus ventanas), la Luna y Marte
+    if estado in (ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE,
+                  GLOSARIO, PANEL_TIENDA, PANEL_SIMULA, LUNA):
+        sonido.loop(sonido.AMBIENTE)
+    else:
+        sonido.parar(sonido.AMBIENTE, 400)
+
+    # Final.wav: en bucle desde la cinemática final hasta que se vuelve a la base
+    if final_sonando:
+        if estado in (FINAL, MISION_OK):
+            sonido.loop(sonido.FINAL)
+        else:
+            sonido.parar(sonido.FINAL, 600)
+            final_sonando = False
+
+    sonido.actualizar()  # encadena despegue después de arranque
 
     clickables.clear()
     ui.fill((0, 0, 0, 0))

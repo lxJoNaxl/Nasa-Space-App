@@ -483,6 +483,8 @@ class Despegue:
                     pygame.draw.ellipse(scr, col, (int(x + dx * r), int(y + dy * r), int(w * r), int(r * 0.9)))
 
     def _planeta(self, scr):
+        if self.fallida:
+            return  # si el cohete falla en pleno vuelo nunca llega a ningún destino: no se dibuja Luna, Marte ni Tierra
         pp = _clamp((self.tl - (self.t_fin - 3.0)) / 3.0)
         if pp <= 0:
             return

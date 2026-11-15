@@ -11,6 +11,7 @@ from input import keys_down
 from map import ImageMap
 from despegue import Despegue
 from dron import DronMarte
+from final import FinalEpico
 
 # ======================================================================
 #  INICIALIZACIÓN
@@ -38,8 +39,9 @@ menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
 (MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME,
- PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA, MISION_OK, PANEL_TIENDA, PANEL_SIMULA) = range(14)
+ PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA, MISION_OK, PANEL_TIENDA, PANEL_SIMULA, FINAL) = range(15)
 anim = None  # animación de despegue activa
+final = None  # cinemática final (al completar la última misión)
 estado = MENU
 
 # ----------------------------------------------------------------------
@@ -449,7 +451,8 @@ def guardar(solo_opciones=False):
                            "mision": game["mision"], "nave": game["nave"],
                            "dinero": game["dinero"], "luna": luna_guardado(),
                            "inventario": {k: sorted(v) for k, v in game["inventario"].items()},
-                           "completadas": game["completadas"]}
+                           "completadas": game["completadas"],
+                           "jugador": game.get("jugador", "")}
     try:
         with open(SAVE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -813,7 +816,7 @@ def toast(msg, color=(255, 255, 0)):
 
 
 def draw_toast():
-    if not toast_msg or estado in (MENU, OPCIONES, DESPEGUE, VIAJE, LUNA):
+    if not toast_msg or estado in (MENU, OPCIONES, DESPEGUE, VIAJE, LUNA, FINAL):
         return
     if pygame.time.get_ticks() - toast_t0 > 4500:
         return
@@ -1549,6 +1552,7 @@ def iniciar(continuar):
     luna_activa = False
     game["mision"], game["nave"], game["dinero"] = None, nave_default(), DINERO_INICIAL
     game["inventario"], game["completadas"] = inventario_inicial(), []
+    game["jugador"] = ""
     player.x, player.y = player_start
     luna_guardada = None
     if continuar:
@@ -1556,6 +1560,7 @@ def iniciar(continuar):
             with open(SAVE_FILE, "r", encoding="utf-8") as f:
                 p = json.load(f)["partida"]
             player.x, player.y = p["x"], p["y"]
+            game["jugador"] = str(p.get("jugador", ""))[:20]
             # Las partidas anteriores a la tienda no tienen inventario: empiezan con la economía nueva.
             if "inventario" in p:
                 game["completadas"] = [int(i) for i in p.get("completadas", []) if 0 <= int(i) < len(MISIONES)]
@@ -2029,7 +2034,8 @@ def completar_mision():
     ultimo_exito = mis["exito"] if mis else ""
     ultima_recompensa = mis["recompensa"] if mis else 0
     antes = [i for i in range(len(MISIONES)) if mision_estado(i) == "disponible"]
-    if idx is not None and idx not in game["completadas"]:
+    nueva = idx is not None and idx not in game["completadas"]
+    if nueva:
         game["completadas"].append(idx)
     ultimo_desbloqueo = [MISIONES[i]["nombre"] for i in range(len(MISIONES))
                          if mision_estado(i) == "disponible" and i not in antes]
@@ -2039,7 +2045,19 @@ def completar_mision():
     player.x, player.y = player_start
     keys_down.clear()
     guardar()
-    estado = MISION_OK
+    if nueva and len(game["completadas"]) >= len(MISIONES):
+        iniciar_final()  # última misión completada: cinemática final y créditos
+    else:
+        estado = MISION_OK
+
+
+def iniciar_final():
+    global estado, final
+    n = game["nave"]
+    final = FinalEpico(screen, os.path.join(BASE_DIR, "images"), n["lanz"], LANZADORES[n["lanz"]]["nombre"],
+                       ultima_mision, [m["nombre"] for m in MISIONES], game.get("jugador", ""))
+    keys_down.clear()
+    estado = FINAL
 
 
 def update_luna():
@@ -2344,6 +2362,8 @@ while running:
             elif estado == VIAJE:
                 if event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_ESCAPE):
                     saltar_viaje()
+            elif estado == FINAL:
+                final.tecla(event)
             elif estado == LUNA:
                 if event.key == pygame.K_ESCAPE:
                     salir_luna_al_menu()
@@ -2379,6 +2399,8 @@ while running:
                 pulsar_despegue()
             elif estado == VIAJE:
                 saltar_viaje()
+            elif estado == FINAL:
+                final.click()
             else:
                 for rect, ident in list(clickables):
                     if rect.collidepoint(pos):
@@ -2412,6 +2434,15 @@ while running:
     elif estado == LUNA:
         update_luna()
         draw_luna()
+    elif estado == FINAL:
+        final.update()
+        final.draw()
+        if final.terminado:
+            game["jugador"] = final.jugador
+            guardar()
+            final = None
+            keys_down.clear()
+            estado = MISION_OK
     elif estado == MISION_OK:
         draw_mision_ok()
     else:

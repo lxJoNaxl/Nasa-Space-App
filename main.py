@@ -64,6 +64,13 @@ ROBOT_BASE_Y = 0.75  # donde apoya los pies (fracción del alto del mapa)
 ROBOT_ALTO = 0.17  # alto del robot (fracción del alto del mapa)
 T_REPARAR = 5.0  # segundos que hay que mantener presionada la E
 
+# Cohetes SIN estela (uno por nivel, mismo orden que LANZADORES).
+# Es el sprite que se ve cuando el cohete ya llegó al planeta.
+# >>> AJUSTA ESTOS NOMBRES a los de tus archivos dentro de /images <<<
+COHETES_SIN_ESTELA = ["COHETE_NIVEL1(SIN ESTELA).png",
+                      "COHETE_NIVEL2(SIN ESTELA).png",
+                      "COHETE_NIVEL3(SIN ESTELA).png"]
+
 # Objetos que hay que recoger para reparar el robot: (id, archivo en /images, nombre, color si falta el PNG)
 OBJETOS = [
     ("antena", "ANTENA.png", "Antena", (230, 200, 60, 255)),
@@ -96,7 +103,7 @@ robot_zona = pygame.Rect(0, 0, 1, 1)
 robot_reparado = False
 reparar_t0 = None
 reparado_t = 0
-COHETES_HORIZ_LL = None  # cohetes acostados CON llama (solo para el vuelo de regreso)
+COHETES_HORIZ_LL = None  # cohetes acostados CON llama (para la llegada y el vuelo de regreso)
 luna_cohete_llama = None
 luna_items = []
 nave_rect = pygame.Rect(0, 0, 1, 1)
@@ -399,6 +406,15 @@ def cargar_cohete(nombre):
     return img
 
 
+def cargar_cohete_sin_estela(i):
+    """Sprite del cohete nivel i+1 SIN estela. Si falta el PNG, quita la llama del original."""
+    ruta = os.path.join(BASE_DIR, "images", COHETES_SIN_ESTELA[i])
+    if os.path.exists(ruta):
+        return cargar_cohete(COHETES_SIN_ESTELA[i])
+    print("No se encontró", COHETES_SIN_ESTELA[i], "- se usa el cohete original sin llama")
+    return sin_llama(COHETES_IMG[i])
+
+
 def escalar(img, factor):
     w, h = img.get_size()
     return pygame.transform.smoothscale(img, (max(1, int(w * factor)), max(1, int(h * factor))))
@@ -518,6 +534,30 @@ def draw_opciones():
     button((250, 440, 300, 50), "Volver", "volver")
 
 
+# ----------------------------------------------------------------------
+#  DINERO (solo se muestra en el mapa de la estación)
+# ----------------------------------------------------------------------
+DINERO_PNG = "dinero.png"
+DINERO_ALTO = 80  # alto del sprite en pantalla (px)
+_dinero_img = None
+
+
+def draw_dinero():
+    """PNG del dinero arriba a la derecha, con el total ganado en las misiones encima."""
+    global _dinero_img
+    if _dinero_img is None:
+        img = cargar_imagen(DINERO_PNG, (60, 160, 80, 255))
+        _dinero_img = escalar(img, DINERO_ALTO / img.get_height())
+    rect = _dinero_img.get_rect(topright=(SCREEN_W - 10, 10))
+    screen.blit(_dinero_img, rect)
+    s = f"${game['dinero']}M"
+    sombra = font_title.render(s, True, (0, 0, 0))
+    texto = font_title.render(s, True, (255, 255, 255))
+    c = rect.center  # mueve este punto si el número no cae bien sobre tu imagen
+    screen.blit(sombra, sombra.get_rect(center=(c[0] + 2, c[1] + 2)))
+    screen.blit(texto, texto.get_rect(center=c))
+
+
 def draw_world():
     global cerca
     cam_x = clamp_camera(int(player.x) + player.image.get_width() // 2 - VIEW_W // 2, VIEW_W, station_map.width)
@@ -548,10 +588,12 @@ def draw_world():
     mision = MISIONES[game["mision"]]["nombre"] if game["mision"] is not None else "ninguna"
     nombre_cohete = LANZADORES[game["nave"]["lanz"]]["nombre"]
     info = font.render(
-        f"Misión: {mision}   |   Cohete: {nombre_cohete}   |   Fondos: ${game['dinero']}M   |   H: Glosario   |   ESC: Menú",
+        f"Misión: {mision}   |   Cohete: {nombre_cohete}   |   H: Glosario   |   ESC: Menú",
         True, (255, 255, 255))
     pygame.draw.rect(screen, (0, 0, 0), (10, 10, info.get_width() + 20, 32), border_radius=4)
     screen.blit(info, (20, 17))
+
+    draw_dinero()
 
     if cerca and estado == ESTACION:
         msg = font.render(f"[E]  {INTERACTIVOS[cerca][2]}", True, (255, 255, 0))
@@ -577,26 +619,26 @@ def draw_panel_mision():
         button((100, 140 + i * 58, 240, 48), etiqueta, ("mision", i), selected=(sel_m == i))
     m = MISIONES[sel_m]
     x, y = 365, 135
-    txt(m["nombre"], font, (255, 255, 0), (x, y));
+    txt(m["nombre"], font, (255, 255, 0), (x, y))
     y += 26
-    txt(f"Tipo: {m['tipo']}", font_s, (200, 220, 255), (x, y));
+    txt(f"Tipo: {m['tipo']}", font_s, (200, 220, 255), (x, y))
     y += 20
-    txt("Historia:", font_s, (255, 255, 0), (x, y));
+    txt("Historia:", font_s, (255, 255, 0), (x, y))
     y += 18
     for l in wrap(m["historia"], font_s, 330):
-        txt(l, font_s, (200, 220, 255), (x, y));
+        txt(l, font_s, (200, 220, 255), (x, y))
         y += 19
     y += 4
-    txt("Qué necesitas:", font_s, (255, 255, 0), (x, y));
+    txt("Qué necesitas:", font_s, (255, 255, 0), (x, y))
     y += 18
     for l in wrap(m["necesitas"], font_s, 330):
-        txt(l, font_s, (200, 220, 255), (x, y));
+        txt(l, font_s, (200, 220, 255), (x, y))
         y += 19
     y += 4
-    txt("Misión real parecida:", font_s, (255, 255, 0), (x, y));
+    txt("Misión real parecida:", font_s, (255, 255, 0), (x, y))
     y += 18
     for l in wrap(m["mision_real"], font_s, 330):
-        txt(l, font_s, (170, 170, 190), (x, y));
+        txt(l, font_s, (170, 170, 190), (x, y))
         y += 19
     r = evaluar(sel_m)
     ok = sum(1 for c in r["checks"] if c[1])
@@ -752,7 +794,7 @@ def draw_informe():
     if exito:
         lineas = wrap("¡Felicidades! Tu cohete cumple con todos los requisitos para esta misión.", font_s, 330)
         for l in lineas:
-            txt(l, font_s, (170, 220, 190), (420, y));
+            txt(l, font_s, (170, 220, 190), (420, y))
             y += 20
     else:
         for nombre, _, causa in fallos:
@@ -1102,9 +1144,12 @@ def cargar_luna(restaurar=None):
         print("No se pudo cargar el mapa lunar:", e)
         return False
 
-    # Cohetes acostados (nariz a la derecha): sin llama para estar parado, con llama para el regreso
+    # Cohetes acostados (nariz a la derecha):
+    #   COHETES_HORIZ    -> sprite SIN estela (el cohete elegido, ya estacionado en el planeta)
+    #   COHETES_HORIZ_LL -> sprite CON estela (mientras vuela hacia el planeta y en el regreso)
     if COHETES_HORIZ is None:
-        COHETES_HORIZ = [pygame.transform.rotate(sin_llama(i), -90) for i in COHETES_IMG]
+        COHETES_HORIZ = [pygame.transform.rotate(cargar_cohete_sin_estela(i), -90)
+                         for i in range(len(COHETES_IMG))]
         COHETES_HORIZ_LL = [pygame.transform.rotate(i, -90) for i in COHETES_IMG]
     mw = max(i.get_width() for i in COHETES_HORIZ)
     mh = max(i.get_height() for i in COHETES_HORIZ)
@@ -1140,6 +1185,7 @@ def iniciar_luna(restaurar=None):
     if not cargar_luna(restaurar):
         return False
     keys_down.clear()
+    player.reposo()
     luna_activa = True
     if restaurar:
         luna_fase = "listo"  # el cohete ya está estacionado: sin animación de llegada
@@ -1183,6 +1229,7 @@ def interactuar_luna():
 def iniciar_regreso():
     global luna_fase, fin_t0, reparar_t0
     keys_down.clear()
+    player.reposo()
     reparar_t0 = None
     luna_fase = "celebrando"
     fin_t0 = pygame.time.get_ticks()
@@ -1205,6 +1252,11 @@ def update_luna():
     global luna_fase, reparar_t0, robot_reparado, reparado_t, fin_t0
     ahora = pygame.time.get_ticks()
     t = (ahora - luna_t0) / 1000.0
+
+    # Fuera de la fase de caminar, el astronauta se ve en su sprite normal
+    if luna_fase != "listo":
+        player.reposo()
+
     if luna_fase == "bajando":
         if t >= LUNA_DEMORA + LUNA_LLEGADA:
             luna_fase = "listo"
@@ -1215,6 +1267,7 @@ def update_luna():
         todos = all(it["ok"] for it in luna_items)
         if cerca_robot and todos and pygame.K_e in keys_down and not robot_reparado:
             # Manteniendo E junto al robot: el astronauta se queda quieto mientras repara
+            player.reposo()
             if reparar_t0 is None:
                 reparar_t0 = ahora
             if (ahora - reparar_t0) / 1000.0 >= T_REPARAR:
@@ -1305,9 +1358,13 @@ def draw_luna():
             e = 1 - (1 - p) ** 3
             rx_ini = cam_x - rw - 30
             rx = int(rx_ini + (rx_final - rx_ini) * e)
+            # Volando hacia el planeta: sprite CON estela, alineado por la nariz con el sprite final
+            lw, lh = luna_cohete_llama.get_size()
+            luna_view.blit(luna_cohete_llama,
+                           (rx + rw - lw - cam_x, ry + (rh - lh) // 2 - cam_y))
         else:
-            rx = rx_final
-        luna_view.blit(luna_cohete, (rx - cam_x, ry - cam_y))
+            # Ya llegó al planeta: sprite SIN estela del cohete que eligió el jugador
+            luna_view.blit(luna_cohete, (rx_final - cam_x, ry - cam_y))
 
     # ---- Objetos, robot y personaje ----
     robot_img = robot_ok if robot_reparado else robot_roto
@@ -1482,6 +1539,7 @@ while running:
                 if estado == PANEL_MISION and game["mision"] is not None:
                     sel_m = game["mision"]
                 keys_down.clear()
+                player.reposo()
         elif event.type == pygame.KEYUP:
             keys_down.discard(event.key)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -1495,6 +1553,10 @@ while running:
                     if rect.collidepoint(pos):
                         on_click(ident)
                         break
+
+    # Fuera de la estación y la Luna el astronauta siempre se ve en su sprite normal
+    if estado not in (ESTACION, LUNA):
+        player.reposo()
 
     if estado == ESTACION:
         player.update(station_map)

@@ -1,1 +1,1 @@
-{"opciones": {"zoom_extra": 1.1, "velocidad": 6}, "partida": {"x": 1806, "y": 774, "mision": 4, "nave": {"formato": 2, "seguridad": 1, "orbita": 3, "lanz": 0, "motor": 2, "energia": 2, "comm": 1, "instr": 2, "blind": 1}, "dinero": 300, "luna": null}}
+{"opciones": {"zoom_extra": 1.1, "velocidad": 6}, "partida": {"x": 636, "y": 966, "mision": null, "nave": {"formato": 2, "seguridad": 1, "orbita": 3, "lanz": 0, "motor": 2, "energia": 2, "comm": 1, "instr": 2, "blind": 1}, "dinero": 500, "luna": null}}

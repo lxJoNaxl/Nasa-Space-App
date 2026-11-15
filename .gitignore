@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Archivos generados al crear el .exe (van en "Releases", no en el repositorio)
+build/
+dist/
+*.spec
+
+# Partida guardada de cada jugador
+partida.json
+
+# Editor / sistema
+.vscode/
+.DS_Store
+Thumbs.db

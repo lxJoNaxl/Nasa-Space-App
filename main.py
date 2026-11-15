@@ -94,6 +94,19 @@ OBJETOS = [
 ]
 ITEM_ALTO = 0.06  # alto de cada objeto (fracción del alto del mapa)
 
+# Qué hace cada pieza del repetidor lunar (se muestra al acercarte a recogerla): id -> (apodo, descripción)
+OBJETOS_DESC = {
+    "bateria": ("La energía",
+                "Es la «pila» gigante del repetidor. Sin ella, el aparato está apagado y no tiene electricidad "
+                "para encender sus luces ni funcionar."),
+    "placa": ("El cerebro",
+              "Es una tarjeta verde con chips que funciona como la «mente» del repetidor. Se encarga de recibir "
+              "los mensajes de los astronautas y traducirlos para que no se pierdan."),
+    "antena": ("La voz",
+               "Es el plato que apunta hacia el espacio. Sirve para lanzar la señal con mucha fuerza hacia arriba "
+               "y lograr que el mensaje viaje miles de kilómetros hasta llegar a la Tierra."),
+}
+
 # Final de la misión
 ASTRO_WIN = "astroWIN.png"
 N_PARPADEOS = 5  # veces que alterna entre el sprite normal y astroWIN
@@ -1117,6 +1130,82 @@ def draw_panel_nave():
 
 
 # ----------------------------------------------------------------------
+#  Descripciones que aparecen al pasar el cursor sobre una pieza de la tienda
+#  (mismo orden que las listas: FORMATOS, MECANISMOS, LANZADORES, MOTORES, ENERGIAS, COMMS, INSTRS, BLINDAJES)
+# ----------------------------------------------------------------------
+TIENDA_DESC = {
+    "formato": [
+        "Estructura básica y ligera. Ideal para empezar y llevar pocos aparatos cerca de la Tierra.",
+        "Amplía el espacio interior para cargar más equipo y soporta mayor peso sin perder equilibrio.",
+        "Chasis reforzado de máxima capacidad. Permite instalar todo el equipo pesado necesario para viajar a la Luna o Marte.",
+    ],
+    "seguridad": [
+        "Sistema desactivado. Impide el despegue para evitar accidentes en la plataforma.",
+        "Activa los seguros e interruptores de control. Desbloquea el lanzamiento y evita fallos al encender motores.",
+    ],
+    "lanz": [
+        "Impulso básico para salir de la atmósfera. Alcanza solo órbitas cercanas a la Tierra.",
+        "Aumenta la potencia de empuje para cargar naves medianas y alcanzar la órbita de la Luna.",
+        "Máxima fuerza de despegue. Único cohete capaz de impulsar cargas pesadas hasta Marte.",
+    ],
+    "motor": [
+        "La nave queda a la deriva sin poder corregir su rumbo ni viajar a otros destinos.",
+        "Propulsión rápida de corto alcance. Permite maniobrar y moverse en misiones alrededor de la Tierra.",
+        "Alta eficiencia y velocidad constante con bajo consumo. Indispensable para viajes largos a la Luna y Marte.",
+    ],
+    "energia": [
+        "Genera electricidad básica para mantener encendidos los sistemas simples cerca de la Tierra.",
+        "Triplica la producción eléctrica para alimentar varios instrumentos científicos al mismo tiempo.",
+        "Máxima captación solar. Obligatorio para dar energía al motor iónico y equipos avanzados.",
+    ],
+    "comm": [
+        "Señal básica de corto alcance. Envía pocos datos al día y solo funciona cerca de la Tierra.",
+        "Mejora la potencia de transmisión para enviar información científica desde la Luna sin perder señal.",
+        "Conexión de espacio profundo. Envía grandes cantidades de datos a alta velocidad incluso desde Marte.",
+    ],
+    "instr": [
+        "Toma fotografías de alta calidad para estudiar la superficie y el clima de la Tierra.",
+        "Usa ondas para atravesar nubes densas y mapear el terreno o la atmósfera de otros mundos.",
+        "Analiza la luz para descubrir de qué materiales y minerales está hecho un planeta.",
+        "Mide cambios de temperatura extrema para detectar calor o hielo oculto en el espacio.",
+        "Amplifica y rebota señales de radio para mejorar la comunicación con otras naves o bases.",
+        "Mide partículas invisibles, radiación y campos magnéticos en el espacio exterior.",
+    ],
+    "blind": [
+        "Capa ligera que protege los circuitos básicos contra el calor y la radiación cercana a la Tierra.",
+        "Refuerzo intermedio que evita daños por radiación solar al salir hacia la Luna.",
+        "Escudo de máxima resistencia. Protege la nave contra la radiación extrema en viajes hacia Marte.",
+    ],
+}
+
+
+def descripcion_pieza(clave, idx):
+    lista = TIENDA_DESC.get(clave, [])
+    return lista[idx] if 0 <= idx < len(lista) else ""
+
+
+def draw_tooltip(titulo, texto, ancho=270):
+    """Recuadro flotante junto al cursor (se mantiene dentro de la ventana)."""
+    lineas = wrap(texto, font_s, ancho)
+    w = max(max(font_s.size(l)[0] for l in lineas), font.size(titulo)[0]) + 24
+    h = 40 + len(lineas) * 17
+    x, y = mouse_ui[0] + 18, mouse_ui[1] + 20
+    if x + w > UI_W - 6:
+        x = mouse_ui[0] - w - 14
+    if y + h > UI_H - 6:
+        y = mouse_ui[1] - h - 14
+    x, y = max(6, x), max(6, y)
+    caja = pygame.Rect(x, y, w, h)
+    fondo = pygame.Surface(caja.size, pygame.SRCALPHA)
+    pygame.draw.rect(fondo, (8, 12, 32, 245), fondo.get_rect(), border_radius=8)
+    ui.blit(fondo, caja.topleft)
+    pygame.draw.rect(ui, (255, 255, 0), caja, 2, border_radius=8)
+    txt(titulo, font, (255, 255, 0), (x + 12, y + 8))
+    for k, l in enumerate(lineas):
+        txt(l, font_s, (220, 235, 255), (x + 12, y + 34 + k * 17))
+
+
+# ----------------------------------------------------------------------
 #  PANEL: TIENDA
 # ----------------------------------------------------------------------
 def draw_panel_tienda():
@@ -1153,11 +1242,14 @@ def draw_panel_tienda():
 
     # --- piezas ---
     rec = mis["recomendados"].get(tienda_cat) if mis is not None else None
+    tip = None  # (titulo, texto) de la pieza bajo el cursor
     for i, c in enumerate(lista):
         card = pygame.Rect(225, 150 + i * 60, 545, 56)
         propio = tiene(tienda_cat, i)
         inicial = i in INICIALES[tienda_cat]
         hover = card.collidepoint(mouse_ui)
+        if hover:
+            tip = (c["nombre"], descripcion_pieza(tienda_cat, i))
         pygame.draw.rect(ui, (18, 55, 60) if propio else ((24, 40, 90) if hover else (18, 28, 62)), card,
                          border_radius=6)
         pygame.draw.rect(ui, (90, 230, 120) if propio else ((255, 255, 0) if hover else (0, 130, 180)), card, 2,
@@ -1185,18 +1277,22 @@ def draw_panel_tienda():
 
     # --- consejo ---
     if mis is None:
-        tip, col = "Consejo: primero elige una misión en la computadora y te diré qué piezas conviene comprar.", (
+        tip_txt, col = "Consejo: primero elige una misión en la computadora y te diré qué piezas conviene comprar.", (
             170, 170, 180)
     elif rec is not None and tiene(tienda_cat, rec):
-        tip, col = f"Ya tienes la pieza recomendada para «{mis['nombre']}». Úsala en el HANGAR.", (90, 230, 120)
+        tip_txt, col = f"Ya tienes la pieza recomendada para «{mis['nombre']}». Úsala en el HANGAR.", (90, 230, 120)
     elif rec is not None:
         c = lista[rec]
-        tip, col = f"Para «{mis['nombre']}» te recomendamos: {c['nombre']} (${c['costo']}M).", (255, 220, 120)
+        tip_txt, col = f"Para «{mis['nombre']}» te recomendamos: {c['nombre']} (${c['costo']}M).", (255, 220, 120)
     else:
-        tip, col = "", (200, 200, 200)
-    for k, l in enumerate(wrap(tip, font_s, 540)[:2]):
+        tip_txt, col = "", (200, 200, 200)
+    for k, l in enumerate(wrap(tip_txt, font_s, 540)[:2]):
         txt(l, font_s, col, (225, 520 + k * 18))
     button((35, 530, 175, 36), "Cerrar", "cerrar")
+
+    # --- descripción flotante (se dibuja al final para quedar encima de todo) ---
+    if tip and tip[1]:
+        draw_tooltip(tip[0], tip[1])
 
 
 def draw_panel_cohete():
@@ -1468,7 +1564,7 @@ def construir_reporte(idx):
     dec.append((f"Antena: enviaba hasta {r['enlace']} GB/día y tu instrumento generaba {r['datos']} GB/día.",
                 verde if r["enlace"] >= r["datos"] * 2 else naranja))
     libre = round(r["cap"] - r["masa"], 2)
-    dec.append((f"Peso: te sobraron {libre} kg de {r['cap']} kg." , verde if libre >= 0.3 else naranja))
+    dec.append((f"Peso: te sobraron {libre} kg de {r['cap']} kg.", verde if libre >= 0.3 else naranja))
     ahorro_m = r["pres"] - r["costo"]
     if ahorro_m >= 0:
         dec.append((f"Dinero: gastaste ${r['costo']}M de ${r['pres']}M y ahorraste ${ahorro_m}M.", verde))
@@ -2123,6 +2219,22 @@ def caja_texto(msg, color, midbottom=None, midtop=None):
     screen.blit(img, img.get_rect(center=box.center))
 
 
+def caja_objeto(it, base):
+    """Cartel al acercarte a una pieza: [E] Recoger + para qué sirve en el repetidor."""
+    apodo, desc = OBJETOS_DESC.get(it["id"], ("", ""))
+    titulo = f"[E]  Recoger {it['nombre']}" + (f"  -  {apodo}" if apodo else "")
+    lineas = wrap(desc, font, 560) if desc else []
+    ancho = max([font.size(titulo)[0]] + [font.size(l)[0] for l in lineas]) + 40
+    alto = 16 + 26 + (len(lineas) * 22 + 6 if lineas else 0) + 8
+    box = pygame.Rect(0, 0, ancho, alto)
+    box.midbottom = base
+    pygame.draw.rect(screen, (0, 0, 0), box, border_radius=8)
+    pygame.draw.rect(screen, (255, 255, 0), box, 2, border_radius=8)
+    screen.blit(font.render(titulo, True, (255, 255, 0)), (box.x + 20, box.y + 12))
+    for k, l in enumerate(lineas):
+        screen.blit(font.render(l, True, (220, 235, 255)), (box.x + 20, box.y + 44 + k * 22))
+
+
 def hud_objetivo():
     """Mensaje arriba a la derecha: cuántos objetos llevas, o REGRESO A CASA."""
     if es_marte and not robot_reparado:
@@ -2262,7 +2374,7 @@ def draw_luna():
         item_cerca = next((it for it in luna_items
                            if not it["ok"] and prect.colliderect(it["rect"].inflate(90, 90))), None)
         if item_cerca:
-            caja_texto(f"[E]  Recoger {item_cerca['nombre']}", (255, 255, 0), midbottom=base)
+            caja_objeto(item_cerca, base)
         elif reparar_t0 is not None:
             prog = min(1.0, (ahora - reparar_t0) / 1000.0 / T_REPARAR)
             bw = 360

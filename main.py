@@ -7,6 +7,7 @@ from sprite import sprites
 from player import Player
 from input import keys_down
 from map import ImageMap
+from despegue import Despegue
 
 # ======================================================================
 #  INICIALIZACIÓN
@@ -32,7 +33,8 @@ SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partida.js
 menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
-MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO = range(8)
+MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO, DESPEGUE = range(9)
+anim = None  # animación de despegue activa
 estado = MENU
 
 # ======================================================================
@@ -211,6 +213,9 @@ def evaluar(idx_mision):
     r["checks"] = chk
     r["ok"] = all(c[1] for c in chk)
     return r
+
+def puntaje(r):
+    return int(300 + r["ciencia"] * 4 + (1 - r["costo"] / r["pres"]) * 300 + (1 - r["masa"] / r["cap"]) * 200)
 
 def hay_partida():
     try:
@@ -597,12 +602,14 @@ def draw_informe():
             y += 5
     if exito:
         sobra = r["pres"] - r["costo"]
-        pts = int(300 + r["ciencia"] * 4 + (1 - r["costo"] / r["pres"]) * 300 + (1 - r["masa"] / r["cap"]) * 200)
+        pts = puntaje(r)
         txt(f"Puntuación: {pts} puntos", font_title, (255, 255, 0), (40, 440))
         txt(f"Ciencia {r['ciencia']}  |  Sobra ${sobra}M  |  Peso libre {round(r['cap'] - r['masa'], 2)} kg", font_s, (200, 220, 255), (40, 478))
     else:
         txt(f"Puntuación parcial: {sum(1 for c in r['checks'] if c[1]) * 30}", font_title, (255, 150, 90), (40, 440))
         txt("Usa el botón 'Sugerir arreglo' en el Hangar.", font_s, (200, 220, 255), (40, 478))
+    if exito:
+        button((40, 515, 390, 44), "¡DESPEGAR!", "despegar")
     button((450, 515, 190, 44), "Volver al hangar", "taller")
     button((655, 515, 105, 44), "Cerrar", "cerrar")
 
@@ -675,6 +682,8 @@ def on_click(ident):
         guardar()
     elif ident == "evaluar":
         estado = PANEL_INFORME
+    elif ident == "despegar":
+        iniciar_despegue()
     elif ident == "taller" or ident == "atras":
         estado = PANEL_NAVE
     elif ident == "ver_cohetes":
@@ -691,6 +700,30 @@ def on_click(ident):
         else:
             estado = ESTACION
         aviso = ""
+
+def iniciar_despegue():
+    """Arranca la animación SOLO si todos los componentes son correctos."""
+    global estado, anim
+    if game["mision"] is None:
+        return
+    r = evaluar(game["mision"])
+    if not r["ok"]:
+        return
+    n = game["nave"]
+    anim = Despegue(screen, os.path.join(BASE_DIR, "images"), n["lanz"], n["orbita"],
+                    ORBITAS[n["orbita"]]["nombre"], MISIONES[game["mision"]]["nombre"],
+                    LANZADORES[n["lanz"]]["nombre"], puntaje(r))
+    keys_down.clear()
+    estado = DESPEGUE
+
+def pulsar_despegue():
+    """Primer toque: salta al final. Segundo toque: vuelve a la estación."""
+    global estado, anim
+    if anim is not None and not anim.terminado:
+        anim.saltar()
+    else:
+        anim = None
+        estado = ESTACION
 
 def sugerir_arreglo():
     """Aplica TODOS los componentes recomendados de golpe."""
@@ -710,10 +743,12 @@ def sugerir_arreglo():
 #  BUCLE PRINCIPAL
 # ======================================================================
 running = True
+
 while running:
     if estado == MENU:
         MARGEN_DER = 60
-        OFF_X = SCREEN_W - 550 - MARGEN_DER
+        # El bloque de botones va de x=250 a x=550 dentro del lienzo
+        OFF_X = SCREEN_W - 650 - MARGEN_DER
     else:
         OFF_X = (SCREEN_W - UI_W) // 2
     OFF_Y = (SCREEN_H - UI_H) // 2
@@ -721,12 +756,16 @@ while running:
     mx, my = pygame.mouse.get_pos()
     mouse_ui = (mx - OFF_X, my - OFF_Y)
 
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN:
             keys_down.add(event.key)
-            if event.key == pygame.K_ESCAPE:
+            if estado == DESPEGUE:
+                if event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_ESCAPE):
+                    pulsar_despegue()
+            elif event.key == pygame.K_ESCAPE:
                 if estado == MENU: running = False
                 elif estado == OPCIONES: on_click("volver")
                 elif estado == ESTACION:
@@ -745,10 +784,13 @@ while running:
             keys_down.discard(event.key)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = (event.pos[0] - OFF_X, event.pos[1] - OFF_Y)
-            for rect, ident in list(clickables):
-                if rect.collidepoint(pos):
-                    on_click(ident)
-                    break
+            if estado == DESPEGUE:
+                pulsar_despegue()
+            else:
+                for rect, ident in list(clickables):
+                    if rect.collidepoint(pos):
+                        on_click(ident)
+                        break
 
     if estado == ESTACION:
         player.update(station_map)
@@ -762,6 +804,9 @@ while running:
     elif estado == OPCIONES:
         screen.fill(BG)
         draw_opciones()
+    elif estado == DESPEGUE:
+        anim.update()
+        anim.draw()
     else:
         draw_world()
         if estado in (PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO):

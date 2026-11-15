@@ -38,7 +38,7 @@ menu_bg = FondoMenu("planeta rotando.mp4", (SCREEN_W, SCREEN_H), BG)
 
 # Estados
 (MENU, OPCIONES, ESTACION, PANEL_MISION, PANEL_NAVE, PANEL_INFORME,
- PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA, MISION_OK, PANEL_TIENDA) = range(13)
+ PANEL_COHETE, GLOSARIO, DESPEGUE, VIAJE, LUNA, MISION_OK, PANEL_TIENDA, PANEL_SIMULA) = range(14)
 anim = None  # animación de despegue activa
 estado = MENU
 
@@ -130,6 +130,8 @@ ultima_mision = "-"
 ultimo_exito = ""
 ultima_recompensa = 0
 ultimo_desbloqueo = []
+ultimo_reporte = None  # reporte científico de la última misión
+ok_pagina = 0  # 0 = resultado, 1 = reporte científico
 negro = pygame.Surface((SCREEN_W, SCREEN_H))
 negro.fill((0, 0, 0))
 ESTRELLAS = [(random.random(), random.random(), random.uniform(0.03, 0.12), random.choice([1, 2, 2, 3]))
@@ -478,6 +480,28 @@ player = Player("images/ASTRONAUTA.png", *player_start)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def ruta_imagen(nombre):
+    """Ruta de una imagen dentro de /images. Si el nombre exacto no existe, busca uno parecido
+    (sin importar mayúsculas, espacios, guiones bajos ni la extensión: .jpg/.jpeg/.png)."""
+    carpeta = os.path.join(BASE_DIR, "images")
+    ruta = os.path.join(carpeta, nombre)
+    if os.path.exists(ruta):
+        return ruta
+
+    def norm(s):
+        return os.path.splitext(s)[0].lower().replace(" ", "").replace("_", "").replace("-", "")
+
+    try:
+        for f in os.listdir(carpeta):
+            if norm(f) == norm(nombre) and f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp")):
+                print("Se usa", f, "en lugar de", nombre)
+                return os.path.join(carpeta, f)
+    except OSError:
+        pass
+    print("No se encontró", nombre, "en", carpeta)
+    return ruta
+
+
 def cargar_cohete(nombre):
     try:
         img = pygame.image.load(os.path.join(BASE_DIR, "images", nombre)).convert_alpha()
@@ -577,11 +601,15 @@ def wrap(s, f, width):
     return lines
 
 
-def button(rect, label, ident, enabled=True, selected=False):
+def button(rect, label, ident, enabled=True, selected=False, peligro=False):
     r = pygame.Rect(rect)
     hover = enabled and r.collidepoint(mouse_ui)
     if not enabled:
         bg, border, fg = (45, 45, 55), (90, 90, 100), (120, 120, 130)
+    elif peligro:
+        bg = (170, 40, 40) if hover else (120, 25, 25)
+        border = (255, 220, 120) if hover else (255, 110, 90)
+        fg = (255, 255, 255)
     else:
         bg = (0, 120, 90) if selected else ((0, 90, 200) if hover else (0, 50, 150))
         border = (255, 255, 0) if (selected or hover) else (0, 200, 255)
@@ -1079,9 +1107,10 @@ def draw_panel_nave():
         txt(l, font_s, col, (270, 506 + k * 17))
 
     # --- botones ---
-    button((270, 542, 150, 34), "Sugerir piezas", "sugerir", enabled=mis is not None)
-    button((430, 542, 200, 34), "Revisar vuelo", "evaluar", enabled=mis is not None)
-    button((640, 542, 135, 34), "Cerrar", "cerrar")
+    button((270, 542, 110, 34), "Sugerir", "sugerir", enabled=mis is not None)
+    button((386, 542, 140, 34), "¿Qué pasa si…?", "simula", enabled=mis is not None)
+    button((532, 542, 130, 34), "Revisar vuelo", "evaluar", enabled=mis is not None)
+    button((668, 542, 107, 34), "Cerrar", "cerrar")
 
 
 # ----------------------------------------------------------------------
@@ -1245,11 +1274,241 @@ def draw_informe():
             (200, 220, 255), (40, 478))
     else:
         txt(f"Puntuación parcial: {sum(1 for c in r['checks'] if c[1]) * 30}", font_title, (255, 150, 90), (40, 440))
-        txt("Usa «Sugerir piezas» en el Hangar.", font_s, (200, 220, 255), (40, 478))
+        txt("Usa «Sugerir piezas» en el Hangar.", font_s, (200, 220, 255), (40, 474))
+        txt("Si despegas así, el cohete se dañará en pleno vuelo y perderás fondos.", font_s, (255, 150, 120), (40, 493))
     if exito:
         button((40, 515, 390, 44), "¡DESPEGAR!", "despegar")
+    else:
+        button((40, 515, 390, 44), "DESPEGAR DE TODOS MODOS (habrá falla)", "despegar", peligro=True)
     button((450, 515, 190, 44), "Volver al hangar", "taller")
     button((655, 515, 105, 44), "Cerrar", "cerrar")
+
+
+def simular_cambio(clave, idx):
+    """Evalúa la nave como si pusieras otra pieza (sin cambiar tu nave de verdad)."""
+    original = game["nave"][clave]
+    game["nave"][clave] = idx
+    try:
+        return evaluar(game["mision"])
+    finally:
+        game["nave"][clave] = original
+
+
+def draw_panel_simula():
+    global det_cat
+    ventana("¿QUÉ PASA SI...?", (10, 10, 780, 580))
+    if game["mision"] is None:
+        txt("Elige una misión en la computadora para probar cambios.", font, (255, 190, 90), (40, 100))
+        button((25, 542, 200, 34), "Volver al hangar", "taller")
+        return
+    if det_cat == "orbita":
+        det_cat = "formato"  # el destino lo fija la misión, no se puede cambiar
+    clave = det_cat
+    lista = LISTA_DE[clave]
+    actual = game["nave"][clave]
+    mis = MISIONES[game["mision"]]
+    r0 = evaluar(game["mision"])
+    pts0 = puntaje(r0) if r0["ok"] else None
+
+    txt("Pasa el mouse sobre una pieza para ver qué pasaría si la pones. Tu nave no cambia hasta que la equipes.",
+        font_s, (190, 210, 235), (25, 70))
+
+    # pestañas de categoría
+    for i, (nombre, k, _) in enumerate(COMPRABLES):
+        tab = pygame.Rect(22 + i * 94, 92, 90, 26)
+        sel = (k == clave)
+        hover = tab.collidepoint(mouse_ui)
+        pygame.draw.rect(ui, (30, 60, 120) if sel else ((24, 40, 90) if hover else (18, 28, 62)), tab, border_radius=6)
+        pygame.draw.rect(ui, (255, 255, 0) if sel else (0, 130, 180), tab, 2 if sel else 1, border_radius=6)
+        txt(nombre, font_s, (255, 255, 255), tab.center, center=True)
+        clickables.append((tab, ("cat", k)))
+
+    # tabla comparativa
+    cols = {"pieza": 30, "vuela": 262, "peso": 380, "energia": 478, "puntos": 585, "costo": 702}
+    for k, tit in (("pieza", "Pieza"), ("vuela", "¿Vuela?"), ("peso", "Peso libre"), ("energia", "Energía libre"),
+                   ("puntos", "Puntos"), ("costo", "Costo")):
+        txt(tit, font_xs, (150, 170, 200), (cols[k], 124))
+    hover_i = None
+    for i, c in enumerate(lista):
+        fila = pygame.Rect(22, 142 + i * 42, 756, 38)
+        r = simular_cambio(clave, i)
+        es_actual = (i == actual)
+        hover = fila.collidepoint(mouse_ui)
+        if hover:
+            hover_i = i
+        pygame.draw.rect(ui, (30, 60, 120) if es_actual else ((24, 40, 90) if hover else (18, 28, 62)), fila,
+                         border_radius=6)
+        pygame.draw.rect(ui, (255, 255, 0) if es_actual else (0, 130, 180), fila, 2 if es_actual else 1,
+                         border_radius=6)
+        txt(recortar(c["nombre"], font_s, 220), font_s, (255, 255, 255), (cols["pieza"], fila.y + 4))
+        if es_actual:
+            sub, subcol = "(puesta ahora)", (255, 255, 0)
+        elif tiene(clave, i):
+            sub, subcol = "(la tienes)", (120, 220, 150)
+        else:
+            sub, subcol = f"(no la tienes: ${c['costo']}M)", (255, 170, 110)
+        txt(sub, font_xs, subcol, (cols["pieza"], fila.y + 21))
+        fallos = sum(1 for ch in r["checks"] if not ch[1])
+        if r["ok"]:
+            chip("SÍ VUELA", cols["vuela"], fila.y + 7, (20, 110, 60))
+        else:
+            chip(f"NO VUELA ({fallos})", cols["vuela"], fila.y + 7, (150, 40, 40))
+        libre_p = round(r["cap"] - r["masa"], 2)
+        libre_e = round(r["gen"] - r["consumo"], 1)
+        txt(f"{libre_p:+.2f} kg", font_s, (90, 230, 120) if libre_p >= 0 else (255, 110, 100), (cols["peso"], fila.y + 11))
+        txt(f"{libre_e:+.1f} W", font_s, (90, 230, 120) if libre_e >= 0 else (255, 110, 100), (cols["energia"], fila.y + 11))
+        if r["ok"]:
+            pts = puntaje(r)
+            txt(str(pts), font_s, (255, 255, 255), (cols["puntos"], fila.y + 11))
+            if pts0 is not None and not es_actual:
+                d = pts - pts0
+                txt(f"({d:+d})", font_xs, (90, 230, 120) if d >= 0 else (255, 150, 100),
+                    (cols["puntos"] + 40, fila.y + 13))
+        else:
+            txt("-", font_s, (150, 150, 160), (cols["puntos"], fila.y + 11))
+        txt(f"${c.get('costo', 0)}M", font_s, (200, 220, 255), (cols["costo"], fila.y + 11))
+        clickables.append((fila, ("equipar", clave, i) if tiene(clave, i) else ("bloqueada", clave, i)))
+
+    # explicación de la pieza señalada
+    det_i = hover_i if hover_i is not None else actual
+    rr = simular_cambio(clave, det_i)
+    caja = pygame.Rect(22, 404, 756, 128)
+    pygame.draw.rect(ui, (10, 16, 40), caja, border_radius=8)
+    pygame.draw.rect(ui, (0, 130, 180), caja, 1, border_radius=8)
+    txt("Si pones: " + lista[det_i]["nombre"], font, (255, 255, 0), (34, 410))
+    lineas = []
+    if rr["ok"]:
+        pts = puntaje(rr)
+        extra = f" ({pts - pts0:+d} que ahora)" if (pts0 is not None and det_i != actual) else ""
+        lineas.append((f"Cumple todos los requisitos. Puntuación estimada: {pts}{extra}.", (90, 230, 120)))
+        lineas.append((f"Ciencia {rr['ciencia']}  |  Nave de ${rr['costo']}M  |  Peso libre {round(rr['cap'] - rr['masa'], 2)} kg"
+                       f"  |  Energía libre {round(rr['gen'] - rr['consumo'], 1)} W", (200, 220, 255)))
+        if rr["cap"] - rr["masa"] < 0.3:
+            lineas.append(("Ojo: el margen de peso es muy justo.", (255, 190, 90)))
+        if rr["gen"] - rr["consumo"] < 2:
+            lineas.append(("Ojo: casi no sobra energía.", (255, 190, 90)))
+        if rr["costo"] > mis["presupuesto"]:
+            lineas.append((f"Ojo: te pasas del presupuesto de la misión (${mis['presupuesto']}M).", (255, 190, 90)))
+        if rr["costo"] < mis["presupuesto"] * 0.6:
+            lineas.append(("Te sobra mucho dinero: ¿podrías usarlo en una pieza con más ciencia?", (170, 200, 230)))
+    else:
+        lineas.append(("Con esta pieza el cohete NO podría volar bien:", (255, 110, 100)))
+        for nombre, ok, causa in rr["checks"]:
+            if not ok:
+                lineas.append(("- " + causa, (255, 200, 170)))
+    y = 436
+    for texto, col in lineas:
+        for l in wrap(texto, font_s, 725):
+            if y < 524:
+                txt(l, font_s, col, (34, y))
+            y += 18
+
+    button((25, 542, 200, 34), "Volver al hangar", "taller")
+    button((235, 542, 200, 34), "Revisar vuelo", "evaluar")
+    txt("Clic en una fila = equipar esa pieza (si ya la tienes)", font_xs, (150, 170, 200), (452, 552))
+    button((670, 542, 105, 34), "Cerrar", "cerrar")
+
+
+# ----------------------------------------------------------------------
+#  REPORTE CIENTÍFICO (al terminar la misión)
+# ----------------------------------------------------------------------
+DIAS_OPERACION = {"Luna": 30, "Marte": 90}
+
+DESCUBRIMIENTOS = {
+    ("Luna", "espectro"): "El espectrómetro encontró hielo de agua mezclado con el suelo de un cráter en sombra. "
+                          "¡Podría servir para beber y fabricar combustible!",
+    ("Luna", "radar"): "El radar miró bajo la superficie: hay capas de polvo lunar de varios metros y cavidades "
+                       "ocultas, posibles refugios para futuros astronautas.",
+    ("Luna", "particulas"): "El detector midió la radiación del espacio sin atmósfera que la frene: es mucho más "
+                            "fuerte que en la Tierra. Dato clave para proteger a los astronautas.",
+    ("Luna", "ir"): "El sensor térmico midió más de 100 °C bajo el sol y unos -170 °C en cráteres en sombra: "
+                    "un cambio de temperatura enorme.",
+    ("Luna", "optico"): "La cámara fotografió cráteres y rocas con gran detalle y ayudó a elegir sitios seguros "
+                        "para aterrizar.",
+    ("Luna", "comm"): "El repetidor mejoró la conexión con la Tierra: ahora los datos llegan más rápido.",
+    ("Marte", "espectro"): "El espectrómetro halló óxido de hierro (por eso Marte es rojo) y minerales que se "
+                           "forman con agua: señales de que hubo agua líquida hace mucho tiempo.",
+    ("Marte", "ir"): "El sensor térmico midió unos 20 °C al mediodía y cerca de -90 °C de noche: el suelo "
+                     "marciano pierde el calor muy rápido.",
+    ("Marte", "radar"): "El radar atravesó el suelo y detectó capas de hielo bajo la superficie.",
+    ("Marte", "particulas"): "El detector midió la radiación que llega a Marte, que casi no tiene atmósfera "
+                             "ni escudo magnético que la frene.",
+    ("Marte", "optico"): "La cámara mostró un paisaje rojizo de rocas y polvo y ayudó a elegir por dónde "
+                         "explorar con el dron.",
+    ("Marte", "comm"): "El repetidor ayuda a que los mensajes de la superficie lleguen a la Tierra, aunque "
+                       "tarden varios minutos.",
+}
+
+
+def construir_reporte(idx):
+    """Resume cómo les fue a tus decisiones: datos, descubrimiento, consecuencias y puntuación."""
+    mis = MISIONES[idx]
+    r = evaluar(idx)
+    n = game["nave"]
+    ins = INSTRS[n["instr"]]
+    orb = ORBITAS[n["orbita"]]
+    dias = DIAS_OPERACION.get(mis["destino"], 30)
+    gb = round(min(r["datos"], r["enlace"]) * dias, 1)
+    desc = DESCUBRIMIENTOS.get((mis["destino"], ins["tag"]), "Tu instrumento recolectó datos útiles para la ciencia.")
+    if mis["destino"] == "Marte":
+        desc += " Además, el dron exploró los alrededores del aterrizaje."
+
+    verde, naranja, azul = (90, 230, 120), (255, 190, 90), (200, 220, 255)
+    dec = []
+    d_en = round(r["gen"] - r["consumo"], 1)
+    if d_en < 3:
+        dec.append((f"Energía muy justa: solo sobraron {d_en} W. Paneles mejores darían más margen.", naranja))
+    else:
+        dec.append((f"Energía: sobraron {d_en} W para tus aparatos.", verde))
+    if orb["solar"] < 1:
+        dec.append((f"En {mis['destino']} llega menos luz solar: tus paneles rindieron x{orb['solar']}.", azul))
+    dec.append((f"Antena: enviaba hasta {r['enlace']} GB/día y tu instrumento generaba {r['datos']} GB/día.",
+                verde if r["enlace"] >= r["datos"] * 2 else naranja))
+    libre = round(r["cap"] - r["masa"], 2)
+    dec.append((f"Peso: te sobraron {libre} kg de {r['cap']} kg." , verde if libre >= 0.3 else naranja))
+    ahorro_m = r["pres"] - r["costo"]
+    if ahorro_m >= 0:
+        dec.append((f"Dinero: gastaste ${r['costo']}M de ${r['pres']}M y ahorraste ${ahorro_m}M.", verde))
+    else:
+        dec.append((f"Dinero: te pasaste ${-ahorro_m}M del presupuesto (${r['pres']}M).", naranja))
+    dec.append((f"Protección: {r['prot']} contra {r['prot_req']} necesaria frente a la radiación.",
+                verde if r["prot"] - r["prot_req"] >= 5 else naranja))
+
+    ahorro = max(0.0, 1 - r["costo"] / r["pres"]) if r["pres"] else 0.0
+    peso_pt = max(0.0, 1 - r["masa"] / r["cap"]) * 200
+    desglose = (300, r["ciencia"] * 4, int(ahorro * 300), int(peso_pt))
+    total = puntaje(r)
+    fracs = [(desglose[1] / (95 * 4), "Un instrumento con más ciencia subiría tu puntuación (aunque cuesta más)."),
+             (desglose[2] / 300, "Gastar menos en piezas que no necesitabas subiría tu puntuación."),
+             (desglose[3] / 200, "Una nave más ligera subiría tu puntuación.")]
+    consejo = min(fracs, key=lambda f: f[0])[1]
+    rango = "Director de misión" if total >= 900 else ("Ingeniero espacial" if total >= 700 else "Cadete espacial")
+    return {"mision": mis["nombre"], "destino": mis["destino"], "instrumento": ins["nombre"], "gb": gb, "dias": dias,
+            "descubrimiento": desc, "decisiones": dec, "desglose": desglose, "total": total, "rango": rango,
+            "consejo": consejo}
+
+
+def draw_reporte():
+    rep_ = ultimo_reporte
+    ventana("REPORTE CIENTÍFICO", (40, 16, 720, 570))
+    txt(f"{rep_['mision']}  -  {rep_['destino']}  -  Instrumento: {rep_['instrumento']}", font, (255, 255, 0), (60, 82))
+    txt("DATOS RECOLECTADOS", font_s, (0, 200, 255), (60, 108))
+    txt(f"{rep_['gb']} GB en {rep_['dias']} días de operación, enviados a la Tierra.", font, (255, 255, 255), (60, 126))
+    txt("DESCUBRIMIENTO", font_s, (0, 200, 255), (60, 156))
+    for k, l in enumerate(wrap(rep_["descubrimiento"], font, 650)[:3]):
+        txt(l, font, (200, 255, 210), (60, 174 + k * 22))
+    txt("TUS DECISIONES Y SUS CONSECUENCIAS", font_s, (0, 200, 255), (60, 252))
+    for k, (texto, col) in enumerate(rep_["decisiones"][:6]):
+        pygame.draw.circle(ui, col, (68, 279 + k * 19), 4)
+        txt(recortar(texto, font_s, 630), font_s, col, (80, 270 + k * 19))
+    b, c, a, p = rep_["desglose"]
+    txt("PUNTUACIÓN", font_s, (0, 200, 255), (60, 398))
+    txt(f"Base {b}  +  Ciencia {c}  +  Ahorro {a}  +  Peso ligero {p}", font_s, (200, 220, 255), (60, 416))
+    txt(f"Total: {rep_['total']} puntos  -  {rep_['rango']}", font_title, (255, 255, 0), (60, 438))
+    for k, l in enumerate(wrap("Consejo: " + rep_["consejo"], font_s, 650)[:2]):
+        txt(l, font_s, (170, 200, 230), (60, 486 + k * 18))
+    button((60, 534, 300, 40), "Volver al resultado", "reporte_volver")
+    button((400, 534, 300, 40), "Volver a la estación", "cerrar")
 
 
 def draw_glosario():
@@ -1321,7 +1580,7 @@ def iniciar(continuar):
 
 
 def on_click(ident):
-    global estado, running, sel_m, det_cat, tienda_cat
+    global estado, running, sel_m, det_cat, tienda_cat, ok_pagina
     if isinstance(ident, tuple):
         tipo = ident[0]
         if tipo == "mision":
@@ -1387,12 +1646,18 @@ def on_click(ident):
         estado = PANEL_NAVE
     elif ident == "ver_cohetes":
         estado = PANEL_COHETE
+    elif ident == "simula":
+        estado = PANEL_SIMULA
+    elif ident == "reporte":
+        ok_pagina = 1
+    elif ident == "reporte_volver":
+        ok_pagina = 0
     elif ident == "sugerir":
         sugerir_arreglo()
     elif ident == "cerrar_glosario":
         estado = glosario_volver
     elif ident == "cerrar":
-        estado = PANEL_NAVE if estado == PANEL_COHETE else ESTACION
+        estado = PANEL_NAVE if estado in (PANEL_COHETE, PANEL_SIMULA) else ESTACION
 
 
 def iniciar_despegue():
@@ -1401,12 +1666,18 @@ def iniciar_despegue():
     if game["mision"] is None:
         return
     r = evaluar(game["mision"])
-    if not r["ok"]:
-        return
     n = game["nave"]
+    falla, perdida = None, 0
+    if not r["ok"]:
+        # Se puede despegar con la revisión en rojo, pero el cohete falla en pleno vuelo y se pierden fondos
+        falla = [c[2] for c in r["checks"] if not c[1]]
+        perdida = min(game["dinero"], max(10, round(r["costo"] * 0.10)))
+        game["dinero"] -= perdida
+        guardar()
     anim = Despegue(screen, os.path.join(BASE_DIR, "images"), n["lanz"], n["orbita"],
                     ORBITAS[n["orbita"]]["nombre"], MISIONES[game["mision"]]["nombre"],
-                    LANZADORES[n["lanz"]]["nombre"], puntaje(r))
+                    LANZADORES[n["lanz"]]["nombre"], puntaje(r) if r["ok"] else 0,
+                    falla=falla, perdida=perdida)
     keys_down.clear()
     estado = DESPEGUE
 
@@ -1416,6 +1687,10 @@ def pulsar_despegue():
     global anim
     if anim is not None and not anim.terminado:
         anim.saltar()
+    elif anim is not None and anim.fallida:
+        anim = None
+        regresar_estacion()
+        toast("El cohete falló en pleno vuelo. Revisa la lista de revisión antes de volver a despegar.", (255, 120, 90))
     else:
         iniciar_viaje()
 
@@ -1478,6 +1753,7 @@ def draw_viaje():
         if game["nave"]["orbita"] in DESTINO_FONDO:
             if not iniciar_luna():
                 regresar_estacion()
+                toast("No se pudo cargar la escena del planeta (revisa /images y la consola)", (255, 120, 90))
         else:
             completar_mision()  # destinos sin escena propia (Marte): llegar bien completa la misión
         return
@@ -1604,7 +1880,7 @@ def cargar_luna(restaurar=None):
     archivo = DESTINO_FONDO.get(n["orbita"])
     if archivo is None:
         return False
-    ruta = os.path.join(BASE_DIR, "images", archivo)
+    ruta = ruta_imagen(archivo)
     try:
         w, h = pygame.image.load(ruta).get_size()
     except (pygame.error, FileNotFoundError, OSError) as e:
@@ -1614,7 +1890,7 @@ def cargar_luna(restaurar=None):
     es_marte = n["orbita"] == MARTE_ORBITA
     if es_marte:
         # Marte: en vez del robot hay un dron posado (robot_rect = dron posado)
-        dron = DronMarte(os.path.join(BASE_DIR, "images", DRON_PNG), w, h)
+        dron = DronMarte(ruta_imagen(DRON_PNG), w, h)
         robot_roto = robot_ok = None
         robot_rect = dron.rect_suelo.copy()
         rrw, rrh = robot_rect.size
@@ -1744,8 +2020,11 @@ def iniciar_regreso():
 def completar_mision():
     """Termina la misión: da la recompensa, la marca como completada, desbloquea la siguiente y muestra el resultado."""
     global estado, luna_activa, ultima_mision, ultimo_exito, ultima_recompensa, ultimo_desbloqueo
+    global ultimo_reporte, ok_pagina
     idx = game["mision"]
     mis = MISIONES[idx] if idx is not None else None
+    ultimo_reporte = construir_reporte(idx) if idx is not None else None
+    ok_pagina = 0
     ultima_mision = mis["nombre"] if mis else "-"
     ultimo_exito = mis["exito"] if mis else ""
     ultima_recompensa = mis["recompensa"] if mis else 0
@@ -2011,6 +2290,9 @@ def draw_mision_ok():
     for x0, y0, vel, tam in ESTRELLAS:
         x = int(((x0 - t * vel) % 1.0) * SCREEN_W)
         pygame.draw.rect(screen, (200, 200, 255), (x, int(y0 * SCREEN_H), tam, tam))
+    if ok_pagina == 1 and ultimo_reporte:
+        draw_reporte()
+        return
     ventana("RESULTADO DE LA MISIÓN", (100, 70, 600, 460))
     txt("MISIÓN EXITOSA", font_big, (90, 230, 120), (UI_W // 2, 160), center=True)
     txt(ultima_mision, font_title, (255, 255, 255), (UI_W // 2, 215), center=True)
@@ -2027,7 +2309,11 @@ def draw_mision_ok():
         msg = ""
     if msg:
         txt(msg, font, (90, 230, 120), (UI_W // 2, 444), center=True)
-    button((300, 472, 200, 46), "Volver a la estación", "cerrar")
+    if ultimo_reporte:
+        button((120, 472, 270, 46), "Ver reporte científico", "reporte")
+        button((410, 472, 270, 46), "Volver a la estación", "cerrar")
+    else:
+        button((300, 472, 200, 46), "Volver a la estación", "cerrar")
 
 
 # ======================================================================
@@ -2117,10 +2403,10 @@ while running:
         draw_opciones()
     elif estado == DESPEGUE:
         anim.update()
-        if anim.terminado:
+        if anim.terminado and not anim.fallida:
             iniciar_viaje()  # en vez del mensaje de "misión completada"
         else:
-            anim.draw()
+            anim.draw()  # si falló, se queda el cartel de MISIÓN FALLIDA hasta pulsar ESPACIO o clic
     elif estado == VIAJE:
         draw_viaje()
     elif estado == LUNA:
@@ -2130,7 +2416,7 @@ while running:
         draw_mision_ok()
     else:
         draw_world()
-        if estado in (PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO, PANEL_TIENDA):
+        if estado in (PANEL_MISION, PANEL_NAVE, PANEL_INFORME, PANEL_COHETE, GLOSARIO, PANEL_TIENDA, PANEL_SIMULA):
             shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
             shade.fill((0, 0, 0, 150))
             screen.blit(shade, (0, 0))
@@ -2141,6 +2427,7 @@ while running:
                 PANEL_COHETE: draw_panel_cohete,
                 GLOSARIO: draw_glosario,
                 PANEL_TIENDA: draw_panel_tienda,
+                PANEL_SIMULA: draw_panel_simula,
             }
             paneles[estado]()
 

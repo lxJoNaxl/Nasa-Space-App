@@ -63,6 +63,8 @@ DESTINOS = {
 
 T_IGN = 3.0     # segundo de la ignición
 T_LIFT = 4.2    # segundo en que se suelta el cohete
+T_FALLA = 3.0   # segundos de vuelo (tras soltarse) a los que se daña el cohete si despegaste con errores
+T_FALLA_CARD = 3.4  # segundos desde la falla hasta el cartel de "MISIÓN FALLIDA"
 
 CIELO_DIA = ((40, 90, 190), (170, 215, 245))
 CIELO_ESPACIO = ((3, 3, 12), (8, 10, 30))
@@ -138,7 +140,8 @@ def _esfera(R, tipo, seed):
 
 class Despegue:
     def __init__(self, screen, carpeta_img, idx_cohete, idx_orbita,
-                 destino, mision, cohete, puntos):
+                 destino, mision, cohete, puntos, falla=None, perdida=0):
+        # falla = lista de causas (texto) si se despegó con la revisión en rojo; None = vuelo normal
         self.screen = screen
         self.SW, self.SH = screen.get_size()
         self.u = self.SH / 1000.0
@@ -146,6 +149,14 @@ class Despegue:
         self.dest = DESTINOS.get(idx_orbita, DESTINOS[0])
         self.destino, self.mision, self.cohete, self.puntos = destino, mision, cohete, puntos
         self.t_fin = self.cfg["t_fin"]
+        self.falla = list(falla) if falla else None
+        self.fallida = bool(self.falla)
+        self.perdida = perdida
+        self.fallo_ocurrido = False
+        self.flash_col = (255, 255, 255)
+        self.eventos = [e for e in self.cfg["eventos"] if not self.fallida or e[0] < T_FALLA]
+        if self.fallida:
+            self.t_fin = T_FALLA + T_FALLA_CARD
 
         self.t = 0.0
         self._last = pygame.time.get_ticks()
@@ -231,13 +242,13 @@ class Despegue:
     # ------------------------------------------------------------------
     def saltar(self):
         """Salta directo al final (cartel de misión cumplida)."""
-        for i in range(self.ev_idx, len(self.cfg["eventos"])):
-            _, kind, _ = self.cfg["eventos"][i]
+        for i in range(self.ev_idx, len(self.eventos)):
+            _, kind, _ = self.eventos[i]
             if kind == "boosters":
                 self._separar(volar=False)
             if kind in ("etapa", "boosters"):
                 self.etapa += 1
-        self.ev_idx = len(self.cfg["eventos"])
+        self.ev_idx = len(self.eventos)
         self.llegada = True
         self.banner = None
         self.t = T_LIFT + self.t_fin
@@ -283,18 +294,23 @@ class Despegue:
 
         self.tl = max(0.0, self.t - T_LIFT)
         tl = self.tl
-        self.alt = (50 * tl ** 2 + 22 * tl ** 3) * u
+        self.alt = self._altura(tl)
         self.cam = max(0.0, self.alt - self.A_stop)
         self.s = _clamp(self.alt / (6500 * u)) ** 0.8
         self.terminado = tl >= self.t_fin
 
         # eventos de la secuencia
-        evs = self.cfg["eventos"]
+        evs = self.eventos
         while self.ev_idx < len(evs) and tl >= evs[self.ev_idx][0]:
             _, kind, texto = evs[self.ev_idx]
             self._evento(kind, texto)
             self.ev_idx += 1
-        if not self.llegada and not self.terminado and tl >= self.t_fin - 3.0:
+        if self.fallida and not self.fallo_ocurrido and tl >= T_FALLA:
+            self.fallo_ocurrido = True
+            self.banner = ("¡FALLA CRÍTICA EN EL COHETE!", self.t)
+            self.flash = 1.0
+            self.flash_col = (255, 110, 60)
+        if not self.fallida and not self.llegada and not self.terminado and tl >= self.t_fin - 3.0:
             self.llegada = True
             self.banner = ("ACERCÁNDOSE A " + self.destino.upper(), self.t)
 
@@ -302,6 +318,8 @@ class Despegue:
         th = 0.0 if self.t < T_IGN else _clamp((self.t - T_IGN) / 1.2)
         if self.t < self.corte_fin:
             th *= 0.1
+        if self.fallo_ocurrido:
+            th = 0.0  # motores apagados
         self.thrust = th
         self.flash = max(0.0, self.flash - dt * 2.5)
 
@@ -324,6 +342,15 @@ class Despegue:
                                       1.2, 1.2, random.uniform(8, 14) * u, 2.0])
             if len(self.humo) > 900:
                 del self.humo[:len(self.humo) - 900]
+        if self.fallo_ocurrido and not self.terminado and tl - T_FALLA < T_FALLA_CARD - 0.5:
+            gy = self.G + self.cam
+            for sx, sy, ancho in self._motores():
+                for _ in range(2):
+                    self.humo.append([sx + random.uniform(-0.5, 0.5) * ancho, gy - sy,
+                                      random.uniform(-40, 40) * u, -random.uniform(0, 60) * u,
+                                      1.8, 1.8, random.uniform(10, 18) * u, 2.2, (55, 55, 60)])
+            if len(self.humo) > 900:
+                del self.humo[:len(self.humo) - 900]
         for p in self.humo:
             p[0] += p[2] * dt
             p[1] += p[3] * dt
@@ -339,6 +366,17 @@ class Despegue:
             b["ang"] += b["vang"] * dt
             b["fuego"] -= dt
         self.vuelan = [b for b in self.vuelan if b["y"] < self.SH + 300]
+
+    def _altura(self, tl):
+        """Altura según el tiempo de vuelo. Si el cohete falla, pierde empuje: sube un poco más y vuelve a bajar."""
+        u = self.u
+        base = (50 * tl ** 2 + 22 * tl ** 3) * u
+        if not self.fallida or tl <= T_FALLA:
+            return base
+        d = tl - T_FALLA
+        v0 = (100 * T_FALLA + 66 * T_FALLA ** 2) * u
+        alt_f = (50 * T_FALLA ** 2 + 22 * T_FALLA ** 3) * u
+        return max(0.0, alt_f + v0 * d - 0.5 * 600 * u * d * d)
 
     def _motores(self):
         """Posiciones en pantalla (x, y, ancho) de los motores encendidos."""
@@ -368,8 +406,16 @@ class Despegue:
         self._boosters_cayendo(scr)
         self._cohete(scr)
         if self.flash > 0:
-            self.velo.fill((255, 255, 255))
+            self.velo.fill(self.flash_col)
             self.velo.set_alpha(int(170 * self.flash))
+            scr.blit(self.velo, (0, 0))
+        if self.fallo_ocurrido:
+            if self.terminado:
+                self.velo.fill((20, 0, 0))
+                self.velo.set_alpha(150)
+            else:
+                self.velo.fill((170, 0, 0))
+                self.velo.set_alpha(int(45 + 30 * math.sin(self.t * 8)))
             scr.blit(self.velo, (0, 0))
         self._hud(scr)
 
@@ -464,12 +510,14 @@ class Despegue:
             return
         ov = self.overlay
         ov.fill((0, 0, 0, 0))
-        for x, wy, vx, vy, vida, vmax, tam, grow in self.humo:
+        for p in self.humo:
+            x, wy, vx, vy, vida, vmax, tam, grow = p[:8]
+            col = p[8] if len(p) > 8 else (228, 228, 234)
             sy = gy - wy
             if -60 < sy < self.SH + 60:
                 f = vida / vmax
                 r = int(tam * (1 + grow * (1 - f)))
-                pygame.draw.circle(ov, (228, 228, 234, int(170 * f)), (int(x), int(sy)), max(1, r))
+                pygame.draw.circle(ov, (col[0], col[1], col[2], int(170 * f)), (int(x), int(sy)), max(1, r))
         scr.blit(ov, (0, 0))
 
     # --- cohete --------------------------------------------------------
@@ -491,6 +539,8 @@ class Despegue:
         amp = 0.0
         if self.t >= T_IGN:
             amp = self.thrust * (2.0 if self.tl < 7 else 0.6) * self.u
+        if self.fallo_ocurrido:
+            amp = 2.5 * self.u  # vibra sin control
         jx = int(random.uniform(-amp, amp))
         jy = int(random.uniform(-amp, amp))
 
@@ -509,7 +559,14 @@ class Despegue:
                 self._llama(scr, b["x"] + mx, b["y"] + my, ancho, ancho * 2.2 * _clamp(b["fuego"] * 2))
 
         im = self.corpo_sin if self.sep else self.corpo
-        scr.blit(im, (self.rx + jx, int(self.ry) + jy))
+        if self.fallo_ocurrido:
+            d = _clamp((self.tl - T_FALLA) / T_FALLA_CARD)
+            rot = pygame.transform.rotate(im, -38 * _ease(d))
+            cx = self.rx + jx + im.get_width() // 2
+            cy = int(self.ry) + jy + im.get_height() // 2
+            scr.blit(rot, rot.get_rect(center=(cx, cy)))
+        else:
+            scr.blit(im, (self.rx + jx, int(self.ry) + jy))
 
     def _boosters_cayendo(self, scr):
         for b in self.vuelan:
@@ -558,9 +615,15 @@ class Despegue:
         pygame.draw.rect(scr, (0, 0, 0), caja, border_radius=6)
         pygame.draw.rect(scr, (0, 200, 255), caja, 2, border_radius=6)
         self._texto(scr, reloj, self.f_mid, (255, 255, 0), topleft=(caja.x + 12, caja.y + 8))
-        km = self.dest["km"] * _clamp(tl / self.t_fin) ** 3
+        if self.fallida:
+            km = self.alt / self.u * 0.03
+        else:
+            km = self.dest["km"] * _clamp(tl / self.t_fin) ** 3
         self._texto(scr, f"Altitud: {_miles(km)} km", self.f_peq, (255, 255, 255), topleft=(caja.x + 12, caja.y + int(48 * u)))
-        self._texto(scr, f"Etapa: {self.etapa}   |   {self.cohete}", self.f_peq, (200, 220, 255), topleft=(caja.x + 12, caja.y + int(82 * u)))
+        if self.fallo_ocurrido:
+            self._texto(scr, "ESTADO: FALLA - MOTORES APAGADOS", self.f_peq, (255, 110, 100), topleft=(caja.x + 12, caja.y + int(82 * u)))
+        else:
+            self._texto(scr, f"Etapa: {self.etapa}   |   {self.cohete}", self.f_peq, (200, 220, 255), topleft=(caja.x + 12, caja.y + int(82 * u)))
 
         # avisos de eventos
         if self.banner and not self.terminado:
@@ -572,6 +635,10 @@ class Despegue:
 
         if not self.terminado:
             self._texto(scr, "ESPACIO: saltar", self.f_peq, (200, 200, 210), topleft=(int(16 * u), SH - int(40 * u)))
+            return
+
+        if self.fallida:
+            self._cartel_falla(scr)
             return
 
         # cartel final
@@ -588,3 +655,50 @@ class Despegue:
         self._texto(scr, f"Puntuación: {self.puntos} puntos", self.f_mid, (255, 255, 255), centro=(cx, caja.y + int(caja.h * 0.70)))
         if int(t * 2) % 2 == 0:
             self._texto(scr, "ESPACIO o clic: volver a la estación", self.f_peq, (170, 200, 230), centro=(cx, caja.y + int(caja.h * 0.89)))
+
+    # --- cartel de misión fallida -------------------------------------
+    def _wrap(self, s, fuente, ancho):
+        lineas, cur = [], ""
+        for w in s.split():
+            if fuente.size(cur + " " + w)[0] > ancho and cur:
+                lineas.append(cur)
+                cur = w
+            else:
+                cur = (cur + " " + w).strip()
+        if cur:
+            lineas.append(cur)
+        return lineas
+
+    def _cartel_falla(self, scr):
+        SW, SH, u = self.SW, self.SH, self.u
+        caja = pygame.Rect(int(SW * 0.04), int(SH * 0.14), int(SW * 0.46), int(SH * 0.72))
+        fondo = pygame.Surface(caja.size, pygame.SRCALPHA)
+        pygame.draw.rect(fondo, (35, 8, 12, 230), fondo.get_rect(), border_radius=12)
+        scr.blit(fondo, caja.topleft)
+        pygame.draw.rect(scr, (255, 90, 80), caja, 3, border_radius=12)
+        cx = caja.centerx
+        y = caja.y + int(caja.h * 0.09)
+        self._texto(scr, "MISIÓN FALLIDA", self.f_tit, (255, 90, 80), centro=(cx, y))
+        y += int(caja.h * 0.10)
+        self._texto(scr, self.mision, self.f_mid, (255, 255, 0), centro=(cx, y))
+        y += int(caja.h * 0.09)
+        self._texto(scr, "Despegaste con la revisión en rojo. Qué falló:", self.f_peq, (255, 200, 170), centro=(cx, y))
+        y += int(caja.h * 0.08)
+        ancho = caja.w - int(60 * u)
+        lineas_max = 7
+        usadas = 0
+        for causa in self.falla[:4]:
+            for k, l in enumerate(self._wrap(causa, self.f_peq, ancho)):
+                if usadas >= lineas_max:
+                    break
+                self._texto(scr, ("- " if k == 0 else "  ") + l, self.f_peq, (255, 225, 210), topleft=(caja.x + int(30 * u), y))
+                y += int(self.SH * 0.036)
+                usadas += 1
+        y = caja.y + int(caja.h * 0.80)
+        if self.perdida > 0:
+            self._texto(scr, f"Pérdidas por el accidente: -${self.perdida}M", self.f_mid, (255, 150, 120), centro=(cx, y))
+        else:
+            self._texto(scr, "No tenías fondos que perder, pero tus piezas siguen a salvo.", self.f_peq, (200, 220, 255), centro=(cx, y))
+        if int(self.t * 2) % 2 == 0:
+            self._texto(scr, "ESPACIO o clic: volver a la estación", self.f_peq, (170, 200, 230),
+                        centro=(cx, caja.y + int(caja.h * 0.93)))
